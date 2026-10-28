@@ -9,10 +9,8 @@ import (
 	"io"
 	"math/big"
 	"os"
-	"os/signal"
 	"strings"
 	"sync"
-	"syscall"
 )
 
 func mcpID(raw json.RawMessage) (string, bool) {
@@ -35,10 +33,8 @@ func mcpID(raw json.RawMessage) (string, bool) {
 }
 
 func mcp() error {
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
 	defer closeRPCIdleConnections()
-	return serveMCP(ctx, os.Stdin, os.Stdout, request)
+	return serveMCP(context.Background(), os.Stdin, os.Stdout, request)
 }
 
 func serveMCP(ctx context.Context, input io.Reader, output io.Writer, call func(context.Context, string, json.RawMessage) (phone.Response, error)) error {

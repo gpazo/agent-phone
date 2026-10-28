@@ -2,14 +2,18 @@ package main
 
 import (
 	"agent-phone/internal/phone"
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -76,6 +80,139 @@ func (h *mcpTestHarness) close() {
 func toolMessage(id string) string {
 	return fmt.Sprintf(`{"jsonrpc":"2.0","id":%s,"method":"tools/call","params":{"name":"phone_wait","arguments":{}}}`, id)
 }
+
+func TestMCPUsesDefaultSIGTERMTermination(t *testing.T) {
+	const childEnv = "AGENT_PHONE_MCP_SIGNAL_TEST_CHILD"
+	if os.Getenv(childEnv) == "1" {
+		if err := mcp(); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+
+	requestEntered := make(chan struct{})
+	requestCancelled := make(chan struct{})
+	withFakeService(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(requestEntered)
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		flusher.Flush()
+		chunk := strings.Repeat(" ", 16*1024)
+		for {
+			select {
+			case <-r.Context().Done():
+				close(requestCancelled)
+				return
+			default:
+			}
+			if _, err := io.WriteString(w, chunk); err != nil {
+				select {
+				case <-r.Context().Done():
+					close(requestCancelled)
+				case <-time.After(time.Second):
+				}
+				return
+			}
+			flusher.Flush()
+		}
+	}))
+	cmd := exec.Command(os.Args[0], "-test.run=^TestMCPUsesDefaultSIGTERMTermination$")
+	cmd.Env = append(os.Environ(), childEnv+"=1")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	var waitDone chan error
+	waitStarted := false
+	waited := false
+	defer func() {
+		_ = stdin.Close()
+		if !waited {
+			_ = cmd.Process.Kill()
+			if waitStarted {
+				select {
+				case <-waitDone:
+				case <-time.After(time.Second):
+					t.Error("MCP subprocess did not stop during cleanup")
+				}
+			} else {
+				_ = cmd.Wait()
+			}
+		}
+	}()
+
+	if _, err := io.WriteString(stdin, `{"jsonrpc":"2.0","id":1,"method":"ping"}`+"\n"); err != nil {
+		t.Fatal(err)
+	}
+	response := make(chan struct {
+		line string
+		err  error
+	}, 1)
+	go func() {
+		line, err := bufio.NewReader(stdout).ReadString('\n')
+		response <- struct {
+			line string
+			err  error
+		}{line, err}
+	}()
+	select {
+	case got := <-response:
+		if got.err != nil {
+			t.Fatalf("read MCP response: %v", got.err)
+		}
+		var message map[string]any
+		if err := json.Unmarshal([]byte(got.line), &message); err != nil || message["id"] != float64(1) || message["result"] == nil {
+			t.Fatalf("MCP did not return a valid ping response: %s (decode error: %v)", got.line, err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("MCP did not respond to ping")
+	}
+
+	if _, err := io.WriteString(stdin, toolMessage(`2`)+"\n"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-requestEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("MCP did not reach the local service")
+	}
+	waitDone = make(chan error, 1)
+	waitStarted = true
+	go func() { waitDone <- cmd.Wait() }()
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-waitDone:
+		waited = true
+		exitErr, ok := err.(*exec.ExitError)
+		if !ok {
+			t.Fatalf("MCP process did not terminate from SIGTERM: %v", err)
+		}
+		status, ok := exitErr.Sys().(syscall.WaitStatus)
+		if !ok || status.Signal() != syscall.SIGTERM {
+			t.Fatalf("MCP process exited for the wrong reason: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("MCP process stayed alive after SIGTERM with standard input and output open")
+	}
+	select {
+	case <-requestCancelled:
+	case <-time.After(time.Second):
+		t.Fatal("MCP process exit did not cancel the in-flight service request")
+	}
+}
+
 func toolErrorCode(t *testing.T, m map[string]any) string {
 	t.Helper()
 	r := m["result"].(map[string]any)
