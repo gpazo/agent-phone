@@ -6,7 +6,6 @@ import (
 	"time"
 )
 
-// phoneGate has a usable zero value and never leaves an abandoned mutex waiter.
 type phoneGate struct {
 	once  sync.Once
 	token chan struct{}

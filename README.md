@@ -52,7 +52,7 @@ build/agent-phone call boot '{"device":"UDID_FROM_CREATE","lease":"TOKEN_FROM_AC
 build/agent-phone call observe '{"device":"UDID_FROM_CREATE","lease":"TOKEN_FROM_ACQUIRE","screenshot":true}'
 ```
 
-`observe` returns native labels, values, frames, ancestor context where present, supported actions, an observation ID, and element references. Only unambiguous elements whose app, context, and native attributes agree across the tree and target receipt are actionable. Incomplete visible accessibility trees remain passive. Use the returned IDs for input:
+`observe` returns native labels, values, frames, ancestor context where present, supported actions, an observation ID, and element references. Only unambiguous elements whose app, context, and native attributes agree across the tree and target receipt are actionable. Incomplete accessibility trees remain passive. Use the returned IDs for input:
 
 ```json
 {
@@ -70,6 +70,38 @@ Send this to `call act`. `type` replaces a text field's value and verifies readb
 Operations on one phone are serialized; different phones can be controlled concurrently. A lease lasts 30 minutes of inactivity, and expired helpers are reaped within 30 seconds. Call `release` with device/lease to close helpers and relinquish control, or `shutdown` first to free simulator memory. Live vision runs independently of these control operations and their leases.
 
 Existing simulators are listed read-only. Only devices created by agent-phone may be acquired, booted, installed, configured, or shut down through its API. The service socket is local and user-only. Leases prevent accidental collisions among cooperating clients; they are not a security boundary against other processes running as the same macOS user.
+
+## UI waits
+
+Use `wait` after input when the app needs time to produce a result. It observes the selected phone without repeating input.
+
+```sh
+build/agent-phone call wait '{
+  "device":"EXACT_MANAGED_UDID",
+  "lease":"LEASE_TOKEN",
+  "conditions":[
+    {"where":{"role":"textfield","value":"Saturn"},"evidence":"tree"},
+    {"where":{"role":"text","label":"Saturn"},"evidence":"tree"}
+  ],
+  "timeoutMs":10000,
+  "screenshot":true
+}'
+```
+
+`conditions` contains 1–16 positive selectors. Fields within `where` use exact string equality for `role`, `label`, `identifier`, `value`, and `context`. An omitted field is unconstrained; an empty string means equal to empty. `action` selects an existing supported action and requires `native-hit` evidence. The default `mode:"all"` requires every condition in one observation. Use `mode:"any"` for alternatives such as onboarding buttons. Conditions do not accumulate across observations.
+
+Each condition explicitly chooses its evidence:
+
+| Evidence | What a match establishes |
+| --- | --- |
+| `tree` | An element is present in the normalized accessibility tree. |
+| `native-hit` | Its app, context, and semantic identity also match a native accessibility receipt at its center. `nativeHitAt` records receipt completion. |
+
+**Neither mode proves visual visibility.** In the test fixture, a fully covered label appears in both the tree and the native center hit. `visible` is not a supported evidence value. A passive label with a native hit remains non-actionable. Native receipts and screenshots are separate captures; screenshots have their own `screenshotAt` timestamp.
+
+`timeoutMs` defaults to 30000 and accepts 1–30000. The budget starts at service entry and includes phone-lock admission, helper startup and I/O, polling, and the requested screenshot. A matching result completed after the deadline is rejected. OS cleanup and response delivery can finish later, so this is an acceptance deadline rather than a hard real-time response guarantee. A successful wait returns `observation`, `satisfied` condition indexes, `attempts`, and `elapsedMs`. It replaces previous action references.
+
+A timeout exits nonzero with `error.code:"wait_timeout"` and partial diagnostics. `lastObservation`, when present, is the last complete in-budget sample and is non-actionable. Cancellation returns `cancelled`. Invalid requests, lost leases, and helper failures stop the wait immediately. The loop retries nonmatching observations and two explicit accessibility readiness responses, `kAXErrorServerNotFound` and a missing frontmost application. Other reader errors are terminal. One phone stays serialized during its wait; other phones and live vision operate independently.
 
 ## Live vision
 
@@ -121,9 +153,9 @@ Run `build/agent-phone mcp` as a stdio MCP server. Example client configuration,
 }
 ```
 
-The server exposes 16 `phone_*` tools for fleet, catalog, creation, ownership, lifecycle, builds, configuration, observation, actions, and matrices. Screenshots are returned as MCP image content alongside the accessibility JSON. `phone_frame` and `phone_wait_frame` return vision metadata and one JPEG image block. Their text blocks omit the base64 image payload. No model is built into the service. Adding the server to an agent client is a separate client configuration step; building this repository does not alter client settings.
+The server exposes 17 `phone_*` tools for fleet, catalog, creation, ownership, lifecycle, builds, configuration, observation, actions, and matrices. Screenshots are returned as MCP image content alongside the accessibility JSON. `phone_frame` and `phone_wait_frame` return vision metadata and one JPEG image block. Their text blocks omit the base64 image payload. No model is built into the service. Adding the server to an agent client is a separate client configuration step; building this repository does not alter client settings.
 
-A persistent MCP process shares a bounded pool of at most eight service connections and closes idle connections when it exits. Failed matrices return `isError:true` with their partial report in the text payload.
+A persistent MCP process shares a bounded pool of at most eight service connections and closes idle connections when it exits. Failed matrices and UI waits return `isError:true` with their partial report in the text payload. `phone_wait` uses the same conditions as `call wait` and attaches a requested screenshot on success. MCP cancellation notifications cancel the corresponding request; EOF cancels outstanding requests. At most eight requests are pending, and overload is rejected without blocking cancellation.
 
 ## Projects and feature variations
 
@@ -131,7 +163,7 @@ A persistent MCP process shares a bounded pool of at most eight service connecti
 
 Path normalization follows the macOS volume's case sensitivity and resolves symlink aliases. On case-insensitive volumes, create any non-ASCII output directories before using them; new directory components must be ASCII so output comparisons can be exact. Existing Unicode paths are supported.
 
-`call matrix` takes an absolute path to a JSON manifest. See `examples/wikipedia.json`. Each variant can specify appearance, Dynamic Type size, launch arguments, steps, and a complete `build` override for another project or scheme. Project paths in a manifest are relative to that manifest. Steps support exact `label` or `identifier` targeting; ambiguous matches fail. `expect` checks an exact visible label/value. Add an `observe` step when a transition needs another capture. Matrix assertions do not automatically wait for asynchronous app content; the demo smoke script shows bounded observation-only polling.
+`call matrix` takes an absolute path to a JSON manifest. See `examples/wikipedia.json`. Each variant can specify appearance, Dynamic Type size, launch arguments, steps, and a complete `build` override for another project or scheme. Project paths in a manifest are relative to that manifest. Steps support exact `label` or `identifier` targeting; ambiguous matches fail. `expect` checks an exact accessibility-tree label or string value in the current observation. It does not establish visual visibility. Use an explicit `wait` step for asynchronous readiness; it accepts the same `conditions`, `mode`, `timeoutMs`, and `screenshot` fields as `call wait`. A successful wait counts as an assertion. Startup uses the same bounded observation loop to obtain its first complete sample, with a 30-second deadline.
 
 Before building, a matrix rejects different build specifications that claim the same or nested DerivedData directories. Reused devices must have exactly one registered name and match the live simulator's name, runtime, device type, and availability. A mismatch fails without acquiring or changing that phone. Lookup, creation, and lease acquisition are serialized across matrix runs.
 
@@ -150,12 +182,12 @@ Environment overrides are `AGENT_PHONE_HOME`, `AGENT_PHONE_ROOT`, and `AGENT_PHO
 ## Current boundaries
 
 - Tested: two- and four-phone Wikipedia runs on the same iOS 26.5 runtime, different system appearance/text size and independent searches. Multiple distinct Xcode projects are supported by the build interface but have not been demonstrated in the live test.
-- Native accessibility only. Web content, remote elements, occluded controls, and controls that cannot be matched to a native identity remain observable but cannot be clicked through this first backend. There is no arbitrary coordinate-tap fallback or OCR. Live vision is sampled JPEG output at up to four frames per second.
+- Native accessibility only. Web content, remote elements, and controls that cannot be matched to a native identity remain observable but cannot be clicked through this first backend. A native identity match does not prove a control is visually unobscured. There is no arbitrary coordinate-tap fallback or OCR. Live vision is sampled JPEG output at up to four frames per second.
 - Native helper APIs are private Apple interfaces. Compatibility must be checked for each Xcode/runtime update. If an accessibility helper goes idle for two minutes, a subsequent read may fail and discard it; observe again to reconnect. Vision workers restart with bounded backoff after failure or a three-second source stall. Inputs are never automatically retried.
 - Text replacement can take effect after the native helper's immediate readback reports failure. Inspect a fresh observation before deciding on another action. This occurred in the first four-phone P1 validation run; the subsequent run with different queries passed.
 - Accessibility and screenshot timestamps are separate; their capture is not atomic. A post-action observation can still show an animation or loading screen.
 - The accessibility tree and native target receipts are separate captures without a shared native identity. Matching attributes and context cannot detect every semantically identical replacement between those captures.
-- The dashboard is a development bundle pointing at the CLI in this checkout. Rebuild it after moving the checkout. Distribution packaging, physical phones, vphone virtual machines, richer scheduling, cancellation, and automatic artifact cleanup are future work.
+- The dashboard is a development bundle pointing at the CLI in this checkout. Rebuild it after moving the checkout. Distribution packaging, physical phones, vphone virtual machines, richer scheduling and automatic artifact cleanup are future work.
 
 ## Development
 
@@ -164,8 +196,13 @@ make test                          # Go race detector and behavior tests
 make build                         # compile CLI, guest input helper, and host vision helper
 make vision                        # compile only the macOS host vision helper
 python3 scripts/smoke-wikipedia.py  # live checks on the already-running demo phones
+python3 scripts/verify-ui-waits.py --device EXACT_MANAGED_UDID --shutdown
 ```
+
+The UI wait check builds a local fixture, runs its matrix on the selected unowned managed phone, and then searches Wikipedia. Wikipedia must already be installed. Use a phone named `Matrix / Variant`; the check preserves its registration and releases its lease. It restores an initially shut-down phone, or shuts it down when requested. Reports include partial failures and live observation artifacts.
 
 See `THIRD_PARTY.md` for exact upstream revisions and licenses. SimSlim and the Jev fork are reused without importing Jev's inference runtime or vphone's firmware pipeline. This repository does not modify either source checkout.
 
 See [the P1 validation](docs/validation-p1-2026-10-28.md) for regression evidence, live build isolation, matrix failure handling, and four-phone results.
+
+See [the UI wait validation](docs/validation-ui-waits-2026-10-28.md) for deadline checks, the covered-label counterexample, and CLI/MCP/matrix results.
