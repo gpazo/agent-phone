@@ -29,13 +29,18 @@ type Variant struct {
 	Steps       []Step   `json:"steps"`
 }
 type Step struct {
-	Action     string `json:"action"`
-	Label      string `json:"label,omitempty"`
-	Identifier string `json:"identifier,omitempty"`
-	Text       string `json:"text,omitempty"`
-	Expect     string `json:"expect,omitempty"`
+	Conditions []Condition `json:"conditions,omitempty"`
+	Mode       *string     `json:"mode,omitempty"`
+	TimeoutMs  *int        `json:"timeoutMs,omitempty"`
+	Screenshot bool        `json:"screenshot,omitempty"`
+	Action     string      `json:"action"`
+	Label      string      `json:"label,omitempty"`
+	Identifier string      `json:"identifier,omitempty"`
+	Text       string      `json:"text,omitempty"`
+	Expect     string      `json:"expect,omitempty"`
 }
 type VariantResult struct {
+	Wait        *WaitResult  `json:"wait,omitempty"`
 	Name        string       `json:"name"`
 	Device      string       `json:"device,omitempty"`
 	Status      string       `json:"status"`
@@ -298,7 +303,6 @@ func (s *Service) runVariant(ctx context.Context, runID string, m Matrix, v Vari
 		return bad(err)
 	}
 	r.Device = a.Device
-	var value any
 	defer func() {
 		cleanup, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
@@ -350,30 +354,44 @@ func (s *Service) runVariant(ctx context.Context, runID string, m Matrix, v Vari
 	observe := a
 	observe.Screenshot = true
 	ready, stopWaiting := context.WithTimeout(ctx, 30*time.Second)
-	defer stopWaiting()
-	var obs *Observation
-	for {
-		value, err = s.Call(ready, Request{"observe", observe})
-		if err == nil {
-			obs = value.(*Observation)
-			break
-		}
-		select {
-		case <-ready.Done():
-			return bad(fmt.Errorf("app accessibility did not become ready: %w (last observation: %v)", ready.Err(), err))
-		case <-time.After(500 * time.Millisecond):
-		}
+	value, err := s.Call(ready, Request{"observe", observe})
+	stopWaiting()
+	if err != nil {
+		return bad(fmt.Errorf("initial app accessibility observation failed: %w", err))
 	}
-	r.Observation = obs
-	for _, step := range v.Steps {
-		if step.Action == "observe" {
-			value, err = s.Call(ctx, Request{"observe", observe})
+	r.Observation = value.(*Observation)
+	if err := s.runSteps(ctx, a, v.Steps, &r); err != nil {
+		return bad(err)
+	}
+	return r
+}
+
+func (s *Service) runSteps(ctx context.Context, a Params, steps []Step, r *VariantResult) error {
+	r.Status = "failed"
+	obs := r.Observation
+	asserted := false
+	for _, step := range steps {
+		switch step.Action {
+		case "wait":
+			args := a
+			args.Conditions, args.Mode, args.TimeoutMs, args.Screenshot = step.Conditions, step.Mode, step.TimeoutMs, step.Screenshot
+			value, err := s.Call(ctx, Request{"wait", args})
+			r.Wait, _ = value.(*WaitResult)
 			if err != nil {
-				return bad(err)
+				return err
+			}
+			obs = r.Wait.Observation
+			asserted = true
+		case "observe":
+			args := a
+			args.Screenshot = true
+			value, err := s.Call(ctx, Request{"observe", args})
+			if err != nil {
+				return err
 			}
 			obs = value.(*Observation)
-		}
-		if step.Action != "observe" && step.Action != "assert" {
+		case "assert":
+		default:
 			var matches []Element
 			for _, e := range obs.Elements {
 				if e.Actionable && ((step.Identifier != "" && e.Identifier == step.Identifier) || (step.Identifier == "" && step.Label != "" && e.Label == step.Label)) {
@@ -381,42 +399,39 @@ func (s *Service) runVariant(ctx context.Context, runID string, m Matrix, v Vari
 				}
 			}
 			if len(matches) != 1 {
-				return bad(fmt.Errorf("step %s: expected one target %q, got %d", step.Action, step.Label, len(matches)))
+				return fmt.Errorf("step %s: expected one target %q, got %d", step.Action, step.Label, len(matches))
 			}
 			action := a
-			action.Action = step.Action
-			action.Text = step.Text
-			action.Ref = matches[0].Ref
-			action.Observation = obs.ID
-			action.Screenshot = true
+			action.Action, action.Text, action.Ref, action.Observation, action.Screenshot = step.Action, step.Text, matches[0].Ref, obs.ID, true
 			reply, err := s.Call(ctx, Request{"act", action})
 			if err != nil {
-				return bad(err)
+				return err
 			}
 			state := reply.(map[string]any)
 			obs, _ = state["observation"].(*Observation)
 			if obs == nil {
-				return bad(fmt.Errorf("input acknowledged but observation failed: %v", state["observationError"]))
+				return fmt.Errorf("input acknowledged but observation failed: %v", state["observationError"])
 			}
-			r.Observation = obs
 		}
+		r.Observation = obs
 		if step.Expect != "" {
 			found := false
 			for _, e := range obs.Elements {
-				if e.Label == step.Expect || e.Value == step.Expect {
+				value, isString := e.Value.(string)
+				if e.Label == step.Expect || isString && value == step.Expect {
 					found = true
 					break
 				}
 			}
 			if !found {
-				return bad(fmt.Errorf("expected visible text %q", step.Expect))
+				return fmt.Errorf("expected tree label or string value %q", step.Expect)
 			}
+			asserted = true
 		}
 	}
 	r.Status = "observed"
-	if len(v.Steps) > 0 {
+	if asserted {
 		r.Status = "passed"
 	}
-	r.Observation = obs
-	return r
+	return nil
 }

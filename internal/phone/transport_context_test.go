@@ -152,3 +152,31 @@ func TestNativeCancellationCallbackFinishesBeforeOperationReturns(t *testing.T) 
 		t.Fatal("callback did not complete")
 	}
 }
+
+func TestBlockedNativePipeWriteCancels(t *testing.T) {
+	inputRead, inputWrite, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer inputRead.Close()
+	defer inputWrite.Close()
+	outputRead, outputWrite, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer outputRead.Close()
+	defer outputWrite.Close()
+	b := &Bridge{input: inputWrite, output: bufio.NewReader(outputRead), actionOutput: outputRead}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { _, err := b.Action(ctx, map[string]any{"text": string(make([]byte, 1024*1024))}); done <- err }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("pipe write ignored deadline")
+	}
+}

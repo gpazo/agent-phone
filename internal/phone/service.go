@@ -20,7 +20,7 @@ import (
 
 type Params struct {
 	Conditions    []Condition       `json:"conditions,omitempty"`
-	Mode          string            `json:"mode,omitempty"`
+	Mode          *string           `json:"mode,omitempty"`
 	AfterEpoch    string            `json:"afterEpoch,omitempty"`
 	AfterSequence uint64            `json:"afterSequence,omitempty"`
 	TimeoutMs     *int              `json:"timeoutMs,omitempty"`
@@ -276,7 +276,11 @@ func (s *Service) Call(ctx context.Context, r Request) (value any, callErr error
 			if value == nil {
 				value = diagnostics
 			}
-			callErr = waitError(callErr)
+			if callErr != nil {
+				if cutoff := contextError(ctx); cutoff != nil {
+					callErr = waitError(cutoff)
+				}
+			}
 		}()
 	}
 	switch r.Method {

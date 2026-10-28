@@ -33,7 +33,7 @@ func watch(args []string) error {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	base, err := client()
+	base, err := client(ctx)
 	if err != nil {
 		return err
 	}

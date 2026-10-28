@@ -41,7 +41,7 @@ func TestWaitAllAnyUseOneSample(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			s, p, _, a, root, _ := waitFixture(t)
 			a.Conditions = []Condition{treeCondition("first"), treeCondition("second")}
-			a.Mode = mode
+			a.Mode = strptr(mode)
 			a.TimeoutMs = intptr(350)
 			reads := 0
 			b := &scriptedBridge{read: func(context.Context) (map[string]any, error) {
@@ -243,7 +243,7 @@ func TestWaitNativeCandidateBudgetAndPriority(t *testing.T) {
 	}
 }
 func TestWaitValidationAndExactValues(t *testing.T) {
-	invalid := []string{`{}`, `{"conditions":[]}`, `{"conditions":[{"where":{},"evidence":"tree"}]}`, `{"conditions":[{"where":{"label":""},"evidence":"visible"}]}`, `{"conditions":[{"where":{"role":"bogus"},"evidence":"tree"}]}`, `{"conditions":[{"where":{"action":"press"},"evidence":"tree"}]}`, `{"conditions":[{"where":{"action":"delete"},"evidence":"native-hit"}]}`, `{"conditions":[{"where":{"label":""},"evidence":"tree"}],"mode":"none"}`, `{"conditions":[{"where":{"label":""},"evidence":"tree"}],"timeoutMs":0}`, `{"conditions":[{"where":{"label":""},"evidence":"tree"}],"timeoutMs":30001}`}
+	invalid := []string{`{}`, `{"conditions":[]}`, `{"conditions":[{"where":{"label":"x"},"evidence":"tree"}],"mode":""}`, `{"conditions":[{"where":{},"evidence":"tree"}]}`, `{"conditions":[{"where":{"label":""},"evidence":"visible"}]}`, `{"conditions":[{"where":{"role":"bogus"},"evidence":"tree"}]}`, `{"conditions":[{"where":{"action":"press"},"evidence":"tree"}]}`, `{"conditions":[{"where":{"action":"delete"},"evidence":"native-hit"}]}`, `{"conditions":[{"where":{"label":""},"evidence":"tree"}],"mode":"none"}`, `{"conditions":[{"where":{"label":""},"evidence":"tree"}],"timeoutMs":0}`, `{"conditions":[{"where":{"label":""},"evidence":"tree"}],"timeoutMs":30001}`}
 	for _, raw := range invalid {
 		var a Params
 		if err := json.Unmarshal([]byte(raw), &a); err != nil {
@@ -275,5 +275,85 @@ func TestWaitValidationAndExactValues(t *testing.T) {
 	now := time.Now()
 	if err := validateLease(&Lease{Token: "x", Expires: now}, "x", now); err == nil {
 		t.Fatal("expiry equality accepted")
+	}
+}
+
+func TestWaitInternalHelperDeadlineRemainsTerminalFailure(t *testing.T) {
+	s, p, _, a, _, _ := waitFixture(t)
+	p.bridge = &scriptedBridge{read: func(context.Context) (map[string]any, error) { return nil, context.DeadlineExceeded }}
+	value, err := s.Call(context.Background(), Request{"wait", a})
+	response := Result(value, err)
+	if response.OK || response.Error.Code != "operation_failed" || value.(*WaitResult).Attempts != 1 {
+		t.Fatalf("internal deadline mislabeled: %+v", response)
+	}
+}
+func TestWaitDurationIncludesScreenshot(t *testing.T) {
+	s, _, _, a, _, _ := waitFixture(t)
+	a.Screenshot = true
+	s.runCommand = func(context.Context, string, ...string) ([]byte, error) {
+		time.Sleep(15 * time.Millisecond)
+		return nil, nil
+	}
+	value, err := s.Call(context.Background(), Request{"wait", a})
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := value.(*WaitResult).Observation
+	if o.DurationMS < 15 || o.ScreenshotAt == nil || !o.ScreenshotAt.After(o.CapturedAt) {
+		t.Fatalf("screenshot not measured: %+v", o)
+	}
+}
+
+type delayedDeadlineContext struct {
+	context.Context
+	deadline time.Time
+}
+
+func (c delayedDeadlineContext) Deadline() (time.Time, bool) { return c.deadline, true }
+func TestWaitRejectsLateSuccessBeforeContextTimerFires(t *testing.T) {
+	s, p, b, a, _, _ := waitFixture(t)
+	p.bridge = &scriptedBridge{read: func(context.Context) (map[string]any, error) { time.Sleep(20 * time.Millisecond); return b.tree, nil }}
+	ctx := delayedDeadlineContext{Context: context.Background(), deadline: time.Now().Add(10 * time.Millisecond)}
+	value, err := s.Call(ctx, Request{"wait", a})
+	if errorCode(err) != "wait_timeout" || value.(*WaitResult).Observation != nil || p.observation != nil {
+		t.Fatalf("accepted late success with delayed timer: %+v %v", value, err)
+	}
+}
+func TestWaitKeepsLastCompleteSampleWhenLaterTransportFails(t *testing.T) {
+	s, p, _, a, root, _ := waitFixture(t)
+	a.Conditions = []Condition{treeCondition("missing")}
+	calls := 0
+	p.bridge = &scriptedBridge{read: func(context.Context) (map[string]any, error) {
+		calls++
+		if calls == 2 {
+			return nil, errors.New("protocol failed")
+		}
+		return map[string]any{"tree": root}, nil
+	}}
+	value, err := s.Call(context.Background(), Request{"wait", a})
+	r := value.(*WaitResult)
+	if err == nil || errorCode(err) == "wait_timeout" || r.LastObservation == nil || r.Attempts != 2 || p.observation != nil {
+		t.Fatalf("lost partial failure: %+v %v", r, err)
+	}
+}
+func TestNativeHitQueryPrioritizesPassiveTargetBeyondOrdinaryLimit(t *testing.T) {
+	s, _, b, a, root, target := waitFixture(t)
+	children := []any{}
+	for i := 0; i < 300; i++ {
+		children = append(children, nativeNode(9, fmt.Sprintf("ordinary-%d", i)))
+	}
+	target[ax+"AutomationType"] = float64(48)
+	target[ax+"Frame"] = nativeFrame(220, 330)
+	b.receipt["tree"].(map[string]any)[ax+"AutomationType"] = float64(48)
+	children = append(children, target)
+	root[ax+"Children"] = children
+	a.Conditions = []Condition{{Where: Selector{Label: strptr("Search")}, Evidence: "native-hit"}, {Where: Selector{Label: strptr("Search")}, Evidence: "native-hit"}}
+	value, err := s.Call(context.Background(), Request{"wait", a})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := value.(*WaitResult)
+	if b.captures != 1 || len(r.Satisfied) != 2 || searchTarget(t, r.Observation).NativeHitAt == nil || searchTarget(t, r.Observation).Actionable {
+		t.Fatalf("target lost behind ordinary candidates: %+v", r)
 	}
 }

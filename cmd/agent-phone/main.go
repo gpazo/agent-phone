@@ -2,7 +2,6 @@ package main
 
 import (
 	"agent-phone/internal/phone"
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -81,7 +80,7 @@ func help() {
   agent-phone serve                        Local Unix-socket service
 
 Methods: fleet, catalog, create, acquire, release, boot, shutdown, configure,
-         install, launch, observe, act, frame, wait_frame, build, matrix.
+         install, launch, observe, wait, act, frame, wait_frame, build, matrix.
 
 Frame reads require only an explicit managed device ID. Control operations
 require a lease token. Create a
@@ -192,13 +191,19 @@ func serve() error {
 	}
 	return err
 }
-func client() (*http.Client, error) {
+func client(ctx context.Context) (*http.Client, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	_, data := paths()
 	socket := filepath.Join(data, "control.sock")
-	probe, err := net.DialTimeout("unix", socket, 200*time.Millisecond)
+	probe, err := (&net.Dialer{Timeout: 200 * time.Millisecond}).DialContext(ctx, "unix", socket)
 	if err == nil {
 		probe.Close()
 	} else {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if err = os.MkdirAll(data, 0700); err != nil {
 			return nil, err
 		}
@@ -218,13 +223,17 @@ func client() (*http.Client, error) {
 		go cmd.Wait()
 		ready := false
 		for i := 0; i < 100; i++ {
-			c, e := net.DialTimeout("unix", socket, 100*time.Millisecond)
+			c, e := (&net.Dialer{Timeout: 100 * time.Millisecond}).DialContext(ctx, "unix", socket)
 			if e == nil {
 				c.Close()
 				ready = true
 				break
 			}
-			time.Sleep(50 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(50 * time.Millisecond):
+			}
 		}
 		if !ready {
 			return nil, fmt.Errorf("service did not start; inspect %s", filepath.Join(data, "daemon.log"))
@@ -232,8 +241,8 @@ func client() (*http.Client, error) {
 	}
 	return sharedRPCClient(socket), nil
 }
-func request(method string, params json.RawMessage) (phone.Response, error) {
-	c, err := client()
+func request(ctx context.Context, method string, params json.RawMessage) (phone.Response, error) {
+	c, err := client(ctx)
 	if err != nil {
 		return phone.Response{}, err
 	}
@@ -244,7 +253,12 @@ func request(method string, params json.RawMessage) (phone.Response, error) {
 	if err != nil {
 		return phone.Response{}, err
 	}
-	response, err := c.Post("http://localhost/rpc", "application/json", bytes.NewReader(data))
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://localhost/rpc", bytes.NewReader(data))
+	if err != nil {
+		return phone.Response{}, err
+	}
+	httpRequest.Header.Set("Content-Type", "application/json")
+	response, err := c.Do(httpRequest)
 	if err != nil {
 		return phone.Response{}, err
 	}
@@ -254,7 +268,9 @@ func request(method string, params json.RawMessage) (phone.Response, error) {
 	return result, err
 }
 func callCLI(method, params string) error {
-	result, err := request(method, json.RawMessage(params))
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	result, err := request(ctx, method, json.RawMessage(params))
 	if err != nil {
 		return err
 	}
@@ -276,87 +292,6 @@ type rpcMessage struct {
 	Params  json.RawMessage `json:"params"`
 }
 
-func mcp() error {
-	// MCP stdio uses one JSON-RPC message per line. Diagnostics never go to stdout.
-	var output sync.Mutex
-	var workers sync.WaitGroup
-	emit := func(id json.RawMessage, result any, rpcError any) {
-		output.Lock()
-		defer output.Unlock()
-		response := map[string]any{"jsonrpc": "2.0", "id": id}
-		if rpcError != nil {
-			response["error"] = rpcError
-		} else {
-			response["result"] = result
-		}
-		_ = json.NewEncoder(os.Stdout).Encode(response)
-	}
-	scanner := bufio.NewScanner(os.Stdin)
-	scanner.Buffer(make([]byte, 65536), 2*1024*1024)
-	for scanner.Scan() {
-		var m rpcMessage
-		if err := json.Unmarshal(scanner.Bytes(), &m); err != nil {
-			emit(json.RawMessage(`null`), nil, map[string]any{"code": -32700, "message": "Invalid JSON"})
-			continue
-		}
-		if len(m.ID) == 0 {
-			continue
-		}
-		workers.Add(1)
-		go func(m rpcMessage) {
-			defer workers.Done()
-			switch m.Method {
-			case "initialize":
-				var p struct {
-					Version string `json:"protocolVersion"`
-				}
-				_ = json.Unmarshal(m.Params, &p)
-				version := "2025-06-18"
-				for _, supported := range []string{"2024-11-05", "2025-03-26", "2025-06-18"} {
-					if p.Version == supported {
-						version = supported
-					}
-				}
-				emit(m.ID, map[string]any{"protocolVersion": version, "capabilities": map[string]any{"tools": map[string]any{}}, "serverInfo": map[string]string{"name": "agent-phone", "version": "0.1.0"}, "instructions": "Use explicit device IDs. Acquire a managed phone before mutation or observation. Each action consumes its observation; use the returned observation for subsequent input. Acknowledgment does not prove task completion."}, nil)
-			case "ping":
-				emit(m.ID, map[string]any{}, nil)
-			case "tools/list":
-				emit(m.ID, map[string]any{"tools": toolDefinitions()}, nil)
-			case "tools/call":
-				var p struct {
-					Name      string          `json:"name"`
-					Arguments json.RawMessage `json:"arguments"`
-				}
-				if err := json.Unmarshal(m.Params, &p); err != nil {
-					emit(m.ID, nil, map[string]any{"code": -32602, "message": "Invalid tool arguments"})
-					return
-				}
-				method := strings.TrimPrefix(p.Name, "phone_")
-				known := false
-				for _, tool := range toolDefinitions() {
-					if tool["name"] == p.Name {
-						known = true
-					}
-				}
-				if !known {
-					emit(m.ID, nil, map[string]any{"code": -32602, "message": "Unknown tool"})
-					return
-				}
-				result, err := request(method, p.Arguments)
-				if err != nil {
-					result = phone.Result(nil, err)
-				}
-				content := mcpContent(result)
-				emit(m.ID, map[string]any{"content": content, "isError": !result.OK}, nil)
-			default:
-				emit(m.ID, nil, map[string]any{"code": -32601, "message": "Method not found"})
-			}
-		}(m)
-	}
-	workers.Wait()
-	closeRPCIdleConnections()
-	return scanner.Err()
-}
 func screenshotPath(v any) string {
 	m, ok := v.(map[string]any)
 	if !ok {
@@ -380,6 +315,7 @@ func toolDefinitions() []map[string]any {
 		"configure":  "Set a managed simulator's appearance or Dynamic Type size.",
 		"install":    "Install an absolute simulator .app bundle on a leased phone.",
 		"launch":     "Launch an app by bundle ID, with optional launch arguments.",
+		"wait":       "Wait for exact UI conditions in one accessibility sample. Evidence is tree presence or native AX center hit, never pixel visibility. Returns an actionable observation on success; timeout diagnostics are non-actionable.",
 		"observe":    "Read native accessibility controls and optionally capture a screenshot. Returns timestamped element references; invalidates the previous observation.",
 		"act":        "Perform one verified native action against an element reference. Requires its observation ID; returns fresh state. Never retry a mutation without reobserving.",
 		"build":      "Serialize an Xcode simulator build with two compiler jobs. Returns app products, source revision and log path.",
@@ -394,6 +330,18 @@ func toolDefinitions() []map[string]any {
 	fields["afterSequence"] = map[string]any{"type": "integer", "minimum": 0}
 	fields["timeoutMs"] = map[string]any{"type": "integer", "minimum": 1, "maximum": 30000}
 	fields["screenshot"] = map[string]any{"type": "boolean"}
+	fields["mode"] = map[string]any{"type": "string", "enum": []string{"all", "any"}, "default": "all"}
+	selector := map[string]any{}
+	for _, key := range []string{"role", "label", "identifier", "value", "context", "action"} {
+		selector[key] = map[string]any{"type": "string"}
+	}
+	selector["role"] = map[string]any{"type": "string", "enum": phone.SelectorRoles}
+	selector["action"] = map[string]any{"type": "string", "enum": phone.ElementActions}
+	fields["conditions"] = map[string]any{"type": "array", "minItems": 1, "maxItems": 16, "items": map[string]any{
+		"type": "object", "required": []string{"where", "evidence"}, "additionalProperties": false,
+		"properties": map[string]any{"where": map[string]any{"type": "object", "minProperties": 1, "additionalProperties": false, "properties": selector}, "evidence": map[string]any{"type": "string", "enum": []string{"tree", "native-hit"}}},
+		"allOf":      []any{map[string]any{"if": map[string]any{"properties": map[string]any{"where": map[string]any{"required": []string{"action"}}}}, "then": map[string]any{"properties": map[string]any{"evidence": map[string]any{"const": "native-hit"}}}}},
+	}}
 	for _, k := range []string{"arguments", "except", "keep"} {
 		fields[k] = map[string]any{"type": "array", "items": map[string]any{"type": "string"}}
 	}
@@ -404,11 +352,12 @@ func toolDefinitions() []map[string]any {
 		"release": "device lease", "boot": "device lease except keep", "shutdown": "device lease",
 		"configure": "device lease appearance contentSize", "install": "device lease app",
 		"launch": "device lease bundleId arguments", "observe": "device lease screenshot",
+		"wait":  "device lease conditions mode timeoutMs screenshot",
 		"act":   "device lease observation ref action text screenshot",
 		"build": "project scheme configuration derivedData buildSettings", "matrix": "matrix",
 	}
 	required := map[string]string{
-		"frame": "device", "wait_frame": "device",
+		"frame": "device", "wait_frame": "device", "wait": "device lease conditions",
 		"create": "name deviceType runtime", "acquire": "device owner", "release": "device lease",
 		"boot": "device lease", "shutdown": "device lease", "configure": "device lease", "install": "device lease app",
 		"launch": "device lease bundleId", "observe": "device lease", "act": "device lease observation ref action",
@@ -419,7 +368,7 @@ func toolDefinitions() []map[string]any {
 	fields["action"] = map[string]any{"type": "string", "enum": []string{"press", "type", "increment", "decrement", "scroll-up", "scroll-down"}}
 	fields["appearance"] = map[string]any{"type": "string", "enum": []string{"light", "dark"}}
 	var result []map[string]any
-	for _, name := range []string{"fleet", "catalog", "create", "acquire", "release", "boot", "shutdown", "configure", "install", "launch", "observe", "act", "frame", "wait_frame", "build", "matrix"} {
+	for _, name := range []string{"fleet", "catalog", "create", "acquire", "release", "boot", "shutdown", "configure", "install", "launch", "observe", "wait", "act", "frame", "wait_frame", "build", "matrix"} {
 		properties := map[string]any{}
 		for _, key := range strings.Fields(allowed[name]) {
 			properties[key] = fields[key]

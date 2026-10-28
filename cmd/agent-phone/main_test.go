@@ -78,7 +78,7 @@ func successfulRPCHandler() http.Handler {
 func TestRequestReusesUnixConnectionAcrossSequentialCalls(t *testing.T) {
 	listener := withFakeService(t, successfulRPCHandler())
 	for i := 0; i < 12; i++ {
-		result, err := request("fleet", nil)
+		result, err := request(context.Background(), "fleet", nil)
 		if err != nil {
 			t.Fatalf("request %d: %v", i, err)
 		}
@@ -116,7 +116,7 @@ func TestRequestBoundsConnectionsAcrossConcurrentWaves(t *testing.T) {
 		for i := 0; i < workers; i++ {
 			go func() {
 				defer workersDone.Done()
-				result, err := request("fleet", nil)
+				result, err := request(context.Background(), "fleet", nil)
 				if err != nil {
 					errs <- err
 				} else if !result.OK {
@@ -154,34 +154,10 @@ func TestMatrixFailureEnvelopeKeepsPartialResultInCLIAndMCP(t *testing.T) {
 		t.Fatalf("CLI output error code = %v, want matrix_failed", got)
 	}
 
-	inputRead, inputWrite, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, _ = io.WriteString(inputWrite, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"phone_matrix","arguments":{"matrix":"unused"}}}`+"\n")
-	_ = inputWrite.Close()
-	outputRead, outputWrite, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	oldStdin, oldStdout := os.Stdin, os.Stdout
-	os.Stdin, os.Stdout = inputRead, outputWrite
-	mcpErr := mcp()
-	os.Stdin, os.Stdout = oldStdin, oldStdout
-	_ = inputRead.Close()
-	_ = outputWrite.Close()
-	if mcpErr != nil {
-		t.Fatalf("mcp: %v", mcpErr)
-	}
-	mcpOutput, err := io.ReadAll(outputRead)
-	_ = outputRead.Close()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var mcpResponse map[string]any
-	if err := json.Unmarshal(mcpOutput, &mcpResponse); err != nil {
-		t.Fatalf("decode MCP output: %v", err)
-	}
+	harness := startMCP(t, request)
+	harness.send(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"phone_matrix","arguments":{"matrix":"unused"}}}`)
+	mcpResponse := harness.next()
+	mcpOutput, _ := json.Marshal(mcpResponse)
 	mcpResult, ok := mcpResponse["result"].(map[string]any)
 	if !ok || mcpResult["isError"] != true {
 		t.Fatalf("MCP did not flag failed matrix result: %s", mcpOutput)

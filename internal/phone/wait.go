@@ -74,13 +74,16 @@ func (c *Condition) UnmarshalJSON(data []byte) error {
 	return nil
 }
 func parseWait(a Params) (waitQuery, error) {
-	q := waitQuery{conditions: a.Conditions, any: a.Mode == "any", timeout: 30 * time.Second, screenshot: a.Screenshot}
+	q := waitQuery{conditions: a.Conditions, timeout: 30 * time.Second, screenshot: a.Screenshot}
 	bad := func(message string) (waitQuery, error) { return waitQuery{}, fail("invalid_wait", message) }
 	if len(q.conditions) < 1 || len(q.conditions) > 16 {
 		return bad("conditions requires 1..16 entries")
 	}
-	if a.Mode != "" && a.Mode != "all" && a.Mode != "any" {
-		return bad("mode must be all or any")
+	if a.Mode != nil {
+		if *a.Mode != "all" && *a.Mode != "any" {
+			return bad("mode must be all or any")
+		}
+		q.any = *a.Mode == "any"
 	}
 	if a.TimeoutMs != nil {
 		if *a.TimeoutMs < 1 || *a.TimeoutMs > 30000 {
@@ -161,6 +164,7 @@ func (s *Service) wait(ctx context.Context, p *Phone, a Params, q waitQuery, sta
 		if err := validateLease(p.lease, a.Lease, time.Now()); err != nil {
 			return result, err
 		}
+		sampleStarted := time.Now()
 		result.Attempts++
 		p.observation = nil
 		o, err := s.capture(ctx, p, &q)
@@ -186,6 +190,7 @@ func (s *Service) wait(ctx context.Context, p *Phone, a Params, q waitQuery, sta
 			return result, err
 		}
 		if matched {
+			o.DurationMS = time.Since(sampleStarted).Milliseconds()
 			if err = s.publish(ctx, p, o); err != nil {
 				return result, waitError(err)
 			}
