@@ -6,7 +6,7 @@ The baseline was `a220b19`. Validation used an Apple M2 Mac with 8 GiB RAM, Xcod
 
 The test app in `tests/fixtures/WaitFixture` has a delayed status label, a timer that changes every 100 ms, and a label covered by an opaque label at the same coordinates. Its explicit accessibility order includes the covered label before the cover. This is a test fixture. The demonstration app remains the official Wikipedia iOS app.
 
-The baseline matrix assertion for `Covered evidence` passed while the screenshot showed only `Opaque cover`. A direct native `capture-targets` request at the shared center also returned the covered label's identity and a token. The screenshot was inspected independently of the accessibility responses.
+The baseline matrix assertion for `Covered evidence` passed while the screenshot showed only `Opaque cover`. A direct native `capture-targets` request at the shared center also returned the covered label's identity. The screenshot was inspected independently of the accessibility responses.
 
 That counterexample rules out interpreting either accessibility-tree presence or a native accessibility center hit as proof of visual visibility. The wait contract must state its evidence source. A screenshot is a separate observation and does not become an automatic occlusion predicate.
 
@@ -53,3 +53,5 @@ This run exercised one managed phone on one Xcode/runtime combination. Four-phon
 The first candidate's live matrix failed immediately after app launch with `kAXErrorServerNotFound`. Two subsequent diagnostic waits reported `window-server frontmost returned no application object`. A live screenshot showed the fixture running, and a later observation returned its complete tree. The one-shot startup design was therefore insufficient. The integration adds bounded retries for these two explicit reader readiness responses while keeping arbitrary transport and malformed protocol errors terminal.
 
 Independent code review also identified two diagnostic gaps in the selected candidate. A screenshot failure lost the otherwise completed AX/native sample, and non-object native target receipts were silently treated as misses. Both are covered by integration regression tests before final live verification.
+
+The final review found a separate MCP shutdown regression: the new signal handler canceled work but left an idle input read blocked after SIGTERM. Commit `80a8638` restores normal OS signal termination. Its subprocess test failed before the fix and passed afterward, including cancellation of an in-flight request to a fake Unix service. Notification cancellation and EOF cleanup are unchanged. `make test` and `make app` passed again after this fix. The rebuilt CLI also exited with SIGTERM in both idle and blocked-output checks with open stdio. The full simulator run above preceded this process-only correction; simulator wait code was unchanged.
