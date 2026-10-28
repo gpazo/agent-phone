@@ -3,6 +3,7 @@ package phone
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"path/filepath"
@@ -262,7 +263,10 @@ func (s *Service) capture(ctx context.Context, p *Phone, query *waitQuery) (*Obs
 	}
 	tree, err := p.bridge.Tree(ctx)
 	if err != nil {
-		p.closeBridge()
+		var unavailable *readerUnavailableError
+		if !errors.As(err, &unavailable) {
+			p.closeBridge()
+		}
 		return nil, err
 	}
 	if err = contextError(ctx); err != nil {
@@ -275,7 +279,12 @@ func (s *Service) capture(ctx context.Context, p *Phone, query *waitQuery) (*Obs
 		return nil, fmt.Errorf("reader returned no application tree")
 	}
 	o := &Observation{ID: randomID(), Device: p.UDID, App: stringValue(root[ax+"Label"]), PID: number(tree["pid"]), CapturedAt: time.Now(), Elements: []Element{}}
-	o.Elements = flatten(root, o.ID)
+	evidence := decodeTree(root, o.ID)
+	if query != nil && query.firstComplete && (!evidence.complete || tree["truncated"] == true || number(root[ax+"AutomationType"]) != 1 || o.App == "") {
+		p.closeBridge()
+		return nil, fmt.Errorf("reader returned an incomplete or invalid application tree")
+	}
+	o.Elements = evidence.elements
 	for i := range o.Elements {
 		if tree["truncated"] == true {
 			o.Elements[i].Actionable = false
@@ -333,7 +342,11 @@ func (s *Service) capture(ctx context.Context, p *Phone, query *waitQuery) (*Obs
 			return nil, fmt.Errorf("invalid native target batch")
 		}
 		for j, index := range indices {
-			target, _ := targets[j].(map[string]any)
+			target, ok := targets[j].(map[string]any)
+			if !ok {
+				p.closeBridge()
+				return nil, fmt.Errorf("invalid native target batch entry")
+			}
 			hit, _ := target["tree"].(map[string]any)
 			e := &o.Elements[index]
 			app, appOK := target["app"].(string)

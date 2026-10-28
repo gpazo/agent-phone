@@ -256,14 +256,22 @@ func (s *Service) event(device, kind string, detail any) {
 	defer file.Close()
 	_ = json.NewEncoder(file).Encode(map[string]any{"time": time.Now(), "device": device, "kind": kind, "detail": detail})
 }
-func (s *Service) Call(ctx context.Context, r Request) (value any, callErr error) {
+func (s *Service) Call(ctx context.Context, r Request) (any, error) {
+	return s.call(ctx, r, nil)
+}
+
+func (s *Service) call(ctx context.Context, r Request, goal *waitQuery) (value any, callErr error) {
 	started := time.Now()
 	a := r.Params
 	var query waitQuery
 	var diagnostics *WaitResult
 	if r.Method == "wait" {
 		var err error
-		query, err = parseWait(a)
+		if goal != nil {
+			query = *goal
+		} else {
+			query, err = parseWait(a)
+		}
 		if err != nil {
 			return nil, err
 		}

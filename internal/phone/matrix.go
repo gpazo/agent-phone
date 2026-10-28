@@ -353,13 +353,12 @@ func (s *Service) runVariant(ctx context.Context, runID string, m Matrix, v Vari
 	}
 	observe := a
 	observe.Screenshot = true
-	ready, stopWaiting := context.WithTimeout(ctx, 30*time.Second)
-	value, err := s.Call(ready, Request{"observe", observe})
-	stopWaiting()
+	initial, err := s.waitForObservation(ctx, observe)
 	if err != nil {
+		r.Wait = initial
 		return bad(fmt.Errorf("initial app accessibility observation failed: %w", err))
 	}
-	r.Observation = value.(*Observation)
+	r.Observation = initial.Observation
 	if err := s.runSteps(ctx, a, v.Steps, &r); err != nil {
 		return bad(err)
 	}

@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -22,6 +23,12 @@ type phoneBridge interface {
 	Action(context.Context, map[string]any) (map[string]any, error)
 	Close()
 }
+
+// A complete negative reader response leaves the framed stream aligned. Only
+// these demonstrated startup failures are safe to resample on that stream.
+type readerUnavailableError struct{ message string }
+
+func (e *readerUnavailableError) Error() string { return "accessibility: " + e.message }
 
 type Bridge struct {
 	reader       *exec.Cmd
@@ -167,6 +174,11 @@ func (b *Bridge) Request(ctx context.Context, request map[string]any) (out map[s
 		return nil, err
 	}
 	if result["ok"] != true {
+		if ok, valid := result["ok"].(bool); valid && !ok {
+			if message, valid := result["error"].(string); valid && (message == "window-server frontmost returned no application object" || strings.HasPrefix(message, "Error kAXErrorServerNotFound getting snapshot for element ")) {
+				return nil, &readerUnavailableError{message: message}
+			}
+		}
 		return nil, fmt.Errorf("accessibility: %v", result["error"])
 	}
 	if result["truncated"] == true {

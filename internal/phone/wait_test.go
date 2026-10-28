@@ -120,7 +120,7 @@ func TestWaitRejectsLateBridgeAndScreenshotSuccess(t *testing.T) {
 			}
 			value, err := s.Call(context.Background(), Request{"wait", a})
 			r := value.(*WaitResult)
-			if errorCode(err) != "wait_timeout" || r.Observation != nil || r.LastObservation != nil || p.observation != nil || p.lastObservation != nil {
+			if errorCode(err) != "wait_timeout" || r.Observation != nil || (r.LastObservation != nil) != screenshot || p.observation != nil || p.lastObservation != nil {
 				t.Fatalf("accepted late sample: %+v %v", r, err)
 			}
 		})

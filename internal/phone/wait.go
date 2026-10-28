@@ -36,10 +36,11 @@ type WaitResult struct {
 }
 
 type waitQuery struct {
-	conditions []Condition
-	any        bool
-	timeout    time.Duration
-	screenshot bool
+	conditions    []Condition
+	any           bool
+	firstComplete bool
+	timeout       time.Duration
+	screenshot    bool
 }
 
 func (s *Selector) UnmarshalJSON(data []byte) error {
@@ -122,6 +123,9 @@ func (s Selector) matches(e Element, actions []string) bool {
 }
 func (q waitQuery) evaluate(o *Observation) ([]int, bool) {
 	satisfied := []int{}
+	if q.firstComplete {
+		return satisfied, true
+	}
 	for i, c := range q.conditions {
 		for _, e := range o.Elements {
 			if c.Where.matches(e, e.Actions) && (c.Evidence == "tree" || e.NativeHitAt != nil) {
@@ -172,35 +176,41 @@ func (s *Service) wait(ctx context.Context, p *Phone, a Params, q waitQuery, sta
 			return result, waitError(cutoff)
 		}
 		if err != nil {
-			return result, err
-		}
-		satisfied, matched := q.evaluate(o)
-		if matched && q.screenshot {
-			if err = s.screenshot(ctx, p, o); err != nil {
-				if cutoff := contextError(ctx); cutoff != nil {
-					err = waitError(cutoff)
-				}
+			var unavailable *readerUnavailableError
+			if !errors.As(err, &unavailable) {
 				return result, err
 			}
-		}
-		if err = contextError(ctx); err != nil {
-			return result, waitError(err)
-		}
-		if err = validateLease(p.lease, a.Lease, time.Now()); err != nil {
-			return result, err
-		}
-		if matched {
-			o.DurationMS = time.Since(sampleStarted).Milliseconds()
-			if err = s.publish(ctx, p, o); err != nil {
+		} else {
+			satisfied, matched := q.evaluate(o)
+			result.LastObservation = diagnosticObservation(o)
+			result.Satisfied = satisfied
+			if err = contextError(ctx); err != nil {
 				return result, waitError(err)
 			}
-			result.Observation = o
-			result.LastObservation = nil
-			result.Satisfied = satisfied
-			return result, nil
+			if matched && q.screenshot {
+				if err = s.screenshot(ctx, p, o); err != nil {
+					if cutoff := contextError(ctx); cutoff != nil {
+						err = waitError(cutoff)
+					}
+					return result, err
+				}
+			}
+			if err = contextError(ctx); err != nil {
+				return result, waitError(err)
+			}
+			if err = validateLease(p.lease, a.Lease, time.Now()); err != nil {
+				return result, err
+			}
+			if matched {
+				o.DurationMS = time.Since(sampleStarted).Milliseconds()
+				if err = s.publish(ctx, p, o); err != nil {
+					return result, waitError(err)
+				}
+				result.Observation = o
+				result.LastObservation = nil
+				return result, nil
+			}
 		}
-		result.LastObservation = diagnosticObservation(o)
-		result.Satisfied = satisfied
 		timer := time.NewTimer(250 * time.Millisecond)
 		select {
 		case <-ctx.Done():
@@ -209,4 +219,11 @@ func (s *Service) wait(ctx context.Context, p *Phone, a Params, q waitQuery, sta
 		case <-timer.C:
 		}
 	}
+}
+
+func (s *Service) waitForObservation(ctx context.Context, a Params) (*WaitResult, error) {
+	query := &waitQuery{firstComplete: true, timeout: 30 * time.Second, screenshot: a.Screenshot}
+	value, err := s.call(ctx, Request{"wait", a}, query)
+	result, _ := value.(*WaitResult)
+	return result, err
 }
