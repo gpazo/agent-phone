@@ -168,7 +168,7 @@ def start_watch(run):
     run.stderr_reader.start(); run.reader.start()
 
 
-def wait_for(predicate, runs, seconds, label):
+def wait_for_frames(predicate, runs, seconds, label):
     end = time.monotonic() + seconds
     while time.monotonic() < end:
         for run in runs:
@@ -205,7 +205,7 @@ def type_and_observe(args, observation, text, checks):
         if "Text replacement not acknowledged; inspect before retrying" not in str(error):
             raise
         checks.setdefault("unacknowledgedInputs", []).append(str(error))
-        observed = SMOKE.wait_for(args, lambda o: SMOKE.has_query(o, text), checks, 30)
+        observed = SMOKE.wait_for(args, [SMOKE.condition(role="textfield", value=text)], checks)
         checks.setdefault("inputsConfirmedByFreshObservation", []).append(text)
         return observed
 
@@ -220,19 +220,20 @@ def search_worker(run, barrier):
         run.checks["leaseConflictRejected"] = True
         args = {"device": phone["udid"], "lease": run.lease}
         SMOKE.call("launch", dict(args, bundleId="org.wikimedia.wikipedia"))
-        ready = SMOKE.wait_for(args, lambda o: SMOKE.target(o, "Skip", action="press")
-            or SMOKE.target(o, "Search", action="press") or SMOKE.target(o, role="textfield", action="type"), run.checks, 45)
+        ready = SMOKE.wait_for(args, [SMOKE.condition("native-hit", label="Skip", action="press"),
+            SMOKE.condition("native-hit", label="Search", action="press"),
+            SMOKE.condition("native-hit", role="textfield", action="type")], run.checks, mode="any")
         skip = SMOKE.target(ready, "Skip", action="press")
         if skip:
             ready = SMOKE.act(args, ready, skip, "press")
-            ready = SMOKE.wait_for(args, lambda o: SMOKE.target(o, "Search", action="press")
-                or SMOKE.target(o, role="textfield", action="type"), run.checks, 30)
+            ready = SMOKE.wait_for(args, [SMOKE.condition("native-hit", label="Search", action="press"),
+                SMOKE.condition("native-hit", role="textfield", action="type")], run.checks, mode="any")
         if not SMOKE.target(ready, role="textfield", action="type"):
             ready = SMOKE.act(args, ready, SMOKE.target(ready, "Search", action="press"), "press")
-            ready = SMOKE.wait_for(args, lambda o: SMOKE.target(o, role="textfield", action="type"), run.checks, 30)
+            ready = SMOKE.wait_for(args, [SMOKE.condition("native-hit", role="textfield", action="type")], run.checks)
         preflight = "Vision " + uuid.uuid4().hex[:4] + " " + query
         ready = type_and_observe(args, ready, preflight, run.checks)
-        ready = SMOKE.wait_for(args, lambda o: SMOKE.has_query(o, preflight), run.checks, 30)
+        ready = SMOKE.wait_for(args, [SMOKE.condition(role="textfield", value=preflight)], run.checks)
         old, _ = SMOKE.observe(args, run.checks)
         current, _ = SMOKE.observe(args, run.checks)
         old_field = SMOKE.target(old, role="textfield", action="type")
@@ -244,10 +245,11 @@ def search_worker(run, barrier):
         barrier.wait(timeout=70)
         run.search_start = time.monotonic()
         post = type_and_observe(args, current, query, run.checks)
-        final = SMOKE.wait_for(args, lambda o: SMOKE.has_query(o, query) and SMOKE.has_result(o, query), run.checks, 60)
+        final = SMOKE.wait_for(args, [SMOKE.condition(role="textfield", value=query),
+            SMOKE.condition(role="text", label=query)], run.checks, mode="all")
         run.search_finish, run.final_observation = time.monotonic(), final
         run.checks["heldReadCursors"] = [[first["epoch"], first["sequence"]], [newer["epoch"], newer["sequence"]]]
-        result.update(status="passed", queryVisible=True, resultVisible=True, postActionObservationId=post.get("id"))
+        result.update(status="passed", queryTreePresent=True, resultTreePresent=True, postActionObservationId=post.get("id"))
     except Exception as error:
         result["error"] = str(error) or type(error).__name__
         try:
@@ -399,7 +401,7 @@ def device_report(run):
                 "statusCounts":dict(run.status_counts), "cadenceMs":stats(list(run.cadence)), "captureAgeMs":stats(list(run.ages)),
                 "jpegBytes":stats(list(run.jpeg_sizes)), "latestCursor":{"epoch":frame["epoch"], "sequence":frame["sequence"]} if frame else None,
                 "latestCapturedAt":frame["capturedAt"] if frame else None,
-                "nativeAX":{"queryVisible":SMOKE.has_query(run.final_observation, run.query), "resultVisible":SMOKE.has_result(run.final_observation, run.query)} if run.final_observation else None,
+                "nativeAX":{"queryTreePresent":SMOKE.has_query(run.final_observation, run.query), "resultTreePresent":SMOKE.has_result(run.final_observation, run.query)} if run.final_observation else None,
                 "checks":run.checks, "finalJpeg":run.jpeg_path}
 
 
@@ -431,7 +433,7 @@ def main():
         reject("frame", {"device":"LIVE-VISION-UNKNOWN-" + uuid.uuid4().hex}, "unmanaged_device")
         report["checks"]["unknownManagedIdRejected"] = True
         for run in runs: start_watch(run)
-        wait_for(lambda: all(r.latest is not None and r.status == "live" for r in runs), runs, 35, "four live frames")
+        wait_for_frames(lambda: all(r.latest is not None and r.status == "live" for r in runs), runs, 35, "four live frames")
         report["checks"]["watchPids"] = [r.process.pid for r in runs]
 
         for run in runs:
@@ -451,11 +453,11 @@ def main():
         report["checks"]["fourDistinctNativeAXQueriesAndResults"] = True
         for run in runs:
             epoch, seq = run.release_cursor
-            wait_for(lambda r=run, e=epoch, s=seq: r.latest and (r.latest["epoch"] != e or r.latest["sequence"] > s), [run], 20, "frame after lease release")
+            wait_for_frames(lambda r=run, e=epoch, s=seq: r.latest and (r.latest["epoch"] != e or r.latest["sequence"] > s), [run], 20, "frame after lease release")
             run.checks["streamAdvancedAfterLeaseRelease"] = True
         report["checks"]["streamsAdvanceAfterLeaseRelease"] = True
         sustained_sample(runs, options.seconds, report)
-        wait_for(lambda: all(r.status == "live" for r in runs), runs, 8, "live feeds after sample")
+        wait_for_frames(lambda: all(r.status == "live" for r in runs), runs, 8, "live feeds after sample")
         report["checks"]["fourFeedsStayedFresh"] = True
         report["status"] = "passed"
     except Exception as error:

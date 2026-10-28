@@ -61,19 +61,26 @@ def observe(args, stats):
         raise
 
 
-def wait_for(args, predicate, stats, timeout=30):
-    deadline = time.monotonic() + timeout
-    while True:
-        try:
-            obs, _ = observe(args, stats)
-            if predicate(obs):
-                return obs
-        except RuntimeError:
-            if time.monotonic() > deadline:
-                raise
-        if time.monotonic() > deadline:
-            raise RuntimeError('Expected screen did not appear')
-        time.sleep(0.3)
+def condition(evidence='tree', **where):
+    return {'where': where, 'evidence': evidence}
+
+
+def wait_for(args, conditions, stats, timeout=30, mode='all'):
+    stats['waits'] = stats.get('waits', 0) + 1
+    try:
+        reply = raw('wait', dict(args, conditions=conditions, mode=mode, timeoutMs=int(timeout*1000)))
+        result = reply.get('result') or {}
+        stats['waitAttempts'] = stats.get('waitAttempts', 0) + result.get('attempts', 0)
+        if not reply['ok']:
+            stats['lastWaitFailure'] = result
+            raise RuntimeError(reply['error'])
+        obs = result['observation']
+        require(obs['device'] == args['device'], 'Wait observation belongs to a different device')
+        return obs
+    except Exception:
+        stats['waitErrors'] = stats.get('waitErrors', 0) + 1
+        raise
+
 
 
 def act(args, obs, element, action, **kw):
@@ -99,17 +106,19 @@ def exercise(phone, query, all_queries, barrier, sample_count):
         require(not conflict['ok'] and conflict['error']['code'] == 'device_busy', 'Competing client acquired this device')
         r['expectedRejections'] += 1
         call('launch', dict(args, bundleId='org.wikimedia.wikipedia'))
-        obs = wait_for(args, lambda o: target(o, 'Skip', action='press') or target(o, 'Search', action='press') or target(o, role='textfield', action='type'), r)
+        obs = wait_for(args, [condition('native-hit', label='Skip', action='press'),
+                              condition('native-hit', label='Search', action='press'),
+                              condition('native-hit', role='textfield', action='type')], r, mode='any')
         skip = target(obs, 'Skip', action='press')
         if skip:
             act(args, obs, skip, 'press')
-            obs = wait_for(args, lambda o: target(o, 'Search', action='press'), r)
+            obs = wait_for(args, [condition('native-hit', label='Search', action='press')], r)
         if not target(obs, role='textfield', action='type'):
             act(args, obs, target(obs, 'Search', action='press'), 'press')
-            obs = wait_for(args, lambda o: target(o, role='textfield', action='type'), r)
+            obs = wait_for(args, [condition('native-hit', role='textfield', action='type')], r)
         preflight = 'Agent phone check '+query
         obs = act(args, obs, target(obs, role='textfield', action='type'), 'type', text=preflight)
-        obs = wait_for(args, lambda o: has_query(o,preflight), r)
+        obs = wait_for(args, [condition(role='textfield', value=preflight)], r)
         r['preflightValueObserved'] = preflight
         barrier.wait(timeout=90)
         old, _ = observe(args, r)
@@ -119,7 +128,7 @@ def exercise(phone, query, all_queries, barrier, sample_count):
         r['expectedRejections'] += 1
         r['searchStartedMonotonic'] = time.monotonic()
         act(args, obs, target(obs, role='textfield', action='type'), 'type', text=query)
-        obs = wait_for(args, lambda o: has_query(o,query) and has_result(o,query), r)
+        obs = wait_for(args, [condition(role='textfield', value=query), condition(role='text', label=query)], r, mode='all')
         r['searchFinishedMonotonic'] = time.monotonic()
         r['searchElapsedMs'] = round((r['searchFinishedMonotonic']-r['searchStartedMonotonic'])*1000,2)
         r['timings'] = {}
