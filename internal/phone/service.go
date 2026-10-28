@@ -19,6 +19,8 @@ import (
 )
 
 type Params struct {
+	Conditions    []Condition       `json:"conditions,omitempty"`
+	Mode          string            `json:"mode,omitempty"`
 	AfterEpoch    string            `json:"afterEpoch,omitempty"`
 	AfterSequence uint64            `json:"afterSequence,omitempty"`
 	TimeoutMs     *int              `json:"timeoutMs,omitempty"`
@@ -70,7 +72,9 @@ func Result(value any, err error) Response {
 		return Response{OK: true, Result: value}
 	}
 	var api *APIError
-	if !errors.As(err, &api) {
+	if errors.Is(err, context.Canceled) {
+		api = &APIError{"cancelled", "Operation cancelled"}
+	} else if !errors.As(err, &api) {
 		api = &APIError{"operation_failed", err.Error()}
 	}
 	return Response{Result: value, Error: api}
@@ -84,7 +88,7 @@ type Lease struct {
 type Phone struct {
 	UDID            string `json:"udid"`
 	Name            string `json:"name"`
-	mu              sync.Mutex
+	mu              phoneGate
 	lease           *Lease
 	bridge          phoneBridge
 	observation     *Observation
@@ -210,7 +214,7 @@ func (s *Service) reapExpired() {
 			s.mu.Unlock()
 			for _, p := range phones {
 				if p.mu.TryLock() {
-					if p.lease != nil && now.After(p.lease.Expires) {
+					if p.lease != nil && !now.Before(p.lease.Expires) {
 						p.closeBridge()
 						p.lease = nil
 						s.event(p.UDID, "lease_expired", nil)
@@ -252,8 +256,29 @@ func (s *Service) event(device, kind string, detail any) {
 	defer file.Close()
 	_ = json.NewEncoder(file).Encode(map[string]any{"time": time.Now(), "device": device, "kind": kind, "detail": detail})
 }
-func (s *Service) Call(ctx context.Context, r Request) (any, error) {
+func (s *Service) Call(ctx context.Context, r Request) (value any, callErr error) {
+	started := time.Now()
 	a := r.Params
+	var query waitQuery
+	var diagnostics *WaitResult
+	if r.Method == "wait" {
+		var err error
+		query, err = parseWait(a)
+		if err != nil {
+			return nil, err
+		}
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, started.Add(query.timeout))
+		defer cancel()
+		diagnostics = &WaitResult{Satisfied: []int{}}
+		defer func() {
+			waitDiagnostics(diagnostics, started)
+			if value == nil {
+				value = diagnostics
+			}
+			callErr = waitError(callErr)
+		}()
+	}
 	switch r.Method {
 	case "fleet":
 		return s.fleet(ctx)
@@ -279,9 +304,11 @@ func (s *Service) Call(ctx context.Context, r Request) (any, error) {
 	if r.Method == "frame" || r.Method == "wait_frame" {
 		return s.frame(ctx, r.Method, a)
 	}
-	p.mu.Lock()
+	if err := p.mu.LockContext(ctx); err != nil {
+		return nil, err
+	}
 	defer p.mu.Unlock()
-	if p.lease != nil && time.Now().After(p.lease.Expires) {
+	if p.lease != nil && !time.Now().Before(p.lease.Expires) {
 		p.lease = nil
 		p.closeBridge()
 	}
@@ -318,6 +345,8 @@ func (s *Service) Call(ctx context.Context, r Request) (any, error) {
 		err := simslim.Shutdown(ctx, "default", p.UDID)
 		s.invalidateMemory()
 		return map[string]any{"shutdown": err == nil}, err
+	case "wait":
+		return s.wait(ctx, p, a, query, started, diagnostics)
 	case "observe":
 		return s.observe(ctx, p, a.Screenshot)
 	case "act":
@@ -362,7 +391,7 @@ func (s *Service) Call(ctx context.Context, r Request) (any, error) {
 	}
 }
 func validateLease(lease *Lease, token string, now time.Time) error {
-	if lease == nil || token == "" || lease.Token != token || now.After(lease.Expires) {
+	if lease == nil || token == "" || lease.Token != token || !now.Before(lease.Expires) {
 		return fail("lease_required", "Acquire this device and supply its current lease token.")
 	}
 	return nil

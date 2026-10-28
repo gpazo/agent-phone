@@ -21,9 +21,9 @@ type fixtureBridge struct {
 	captures    int
 }
 
-func (b *fixtureBridge) Tree() (map[string]any, error) { return b.tree, nil }
-func (b *fixtureBridge) Close()                        { b.closed = true }
-func (b *fixtureBridge) Action(request map[string]any) (map[string]any, error) {
+func (b *fixtureBridge) Tree(context.Context) (map[string]any, error) { return b.tree, nil }
+func (b *fixtureBridge) Close()                                       { b.closed = true }
+func (b *fixtureBridge) Action(_ context.Context, request map[string]any) (map[string]any, error) {
 	switch request["action"] {
 	case "capture-targets":
 		b.captures++

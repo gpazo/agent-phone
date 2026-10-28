@@ -18,8 +18,8 @@ import (
 // Adapted from jev-vphone-cli's persistent Simulator transport. Each Bridge
 // belongs to one device and is used under that device's operation mutex.
 type phoneBridge interface {
-	Tree() (map[string]any, error)
-	Action(map[string]any) (map[string]any, error)
+	Tree(context.Context) (map[string]any, error)
+	Action(context.Context, map[string]any) (map[string]any, error)
 	Close()
 }
 
@@ -34,6 +34,9 @@ type Bridge struct {
 }
 
 func NewBridge(ctx context.Context, udid, root string) (*Bridge, error) {
+	if err := contextError(ctx); err != nil {
+		return nil, err
+	}
 	b := &Bridge{socket: filepath.Join(os.TempDir(), "ap-"+randomID()+".sock")}
 	reader := filepath.Join(root, ".tools", "SimulatorFrameworkBridge-iOS")
 	actions := filepath.Join(root, "build", "AgentPhoneActions")
@@ -52,18 +55,22 @@ func NewBridge(ctx context.Context, udid, root string) (*Bridge, error) {
 			b.Close()
 		}
 	}()
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
+	connect, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	for contextError(connect) == nil {
 		var err error
-		b.conn, err = net.DialTimeout("unix", b.socket, 200*time.Millisecond)
+		b.conn, err = (&net.Dialer{Timeout: 200 * time.Millisecond}).DialContext(connect, "unix", b.socket)
 		if err == nil {
 			break
 		}
 		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
+		case <-connect.Done():
+			return nil, connect.Err()
 		case <-time.After(30 * time.Millisecond):
 		}
+	}
+	if err := contextError(connect); err != nil {
+		return nil, err
 	}
 	if b.conn == nil {
 		return nil, fmt.Errorf("native accessibility reader did not become ready")
@@ -83,7 +90,10 @@ func NewBridge(ctx context.Context, udid, root string) (*Bridge, error) {
 	if err = b.actions.Start(); err != nil {
 		return nil, err
 	}
-	if _, err = b.Action(map[string]any{"action": "prepare"}); err != nil {
+	if _, err = b.Action(ctx, map[string]any{"action": "prepare"}); err != nil {
+		return nil, err
+	}
+	if err := contextError(ctx); err != nil {
 		return nil, err
 	}
 	failed = false
@@ -109,20 +119,31 @@ func (b *Bridge) Close() {
 	_ = os.Remove(b.socket)
 }
 
-func (b *Bridge) Tree() (map[string]any, error) {
+func (b *Bridge) Tree(ctx context.Context) (map[string]any, error) {
 	attrs := []string{"ElementType", "ElementBaseType", "Label", "Value", "Identifier", "Frame", "AutomationType", "Children", "PlaceholderValue"}
 	for i := range attrs {
 		attrs[i] = "XC_kAXXCAttribute" + attrs[i]
 	}
-	return b.Request(map[string]any{"verb": "describe", "method": "window-server", "x": 0, "y": 0, "snapshotTree": true, "automationMode": true, "attributes": attrs, "maxNodes": 20000})
+	return b.Request(ctx, map[string]any{"verb": "describe", "method": "window-server", "x": 0, "y": 0, "snapshotTree": true, "automationMode": true, "attributes": attrs, "maxNodes": 20000})
 }
 
-func (b *Bridge) Request(request map[string]any) (map[string]any, error) {
+func (b *Bridge) Request(ctx context.Context, request map[string]any) (out map[string]any, err error) {
+	defer func() {
+		if cutoff := contextError(ctx); cutoff != nil {
+			out = nil
+			err = cutoff
+		}
+	}()
 	data, err := json.Marshal(request)
 	if err != nil {
 		return nil, err
 	}
-	_ = b.conn.SetDeadline(time.Now().Add(15 * time.Second))
+	if err = contextError(ctx); err != nil {
+		return nil, err
+	}
+	stop := cancelIO(ctx, func() { _ = b.conn.Close() })
+	defer stop()
+	_ = b.conn.SetDeadline(ioDeadline(ctx))
 	payload := make([]byte, 4+len(data))
 	binary.BigEndian.PutUint32(payload, uint32(len(data)))
 	copy(payload[4:], data)
@@ -154,15 +175,26 @@ func (b *Bridge) Request(request map[string]any) (map[string]any, error) {
 	return result, nil
 }
 
-func (b *Bridge) Action(request map[string]any) (map[string]any, error) {
+func (b *Bridge) Action(ctx context.Context, request map[string]any) (out map[string]any, err error) {
+	defer func() {
+		if cutoff := contextError(ctx); cutoff != nil {
+			out = nil
+			err = cutoff
+		}
+	}()
 	data, err := json.Marshal(request)
 	if err != nil {
 		return nil, err
 	}
-	if f, ok := b.input.(*os.File); ok {
-		_ = f.SetWriteDeadline(time.Now().Add(15 * time.Second))
+	if err = contextError(ctx); err != nil {
+		return nil, err
 	}
-	_ = b.actionOutput.SetReadDeadline(time.Now().Add(15 * time.Second))
+	stop := cancelIO(ctx, func() { _ = b.input.Close(); _ = b.actionOutput.Close() })
+	defer stop()
+	if f, ok := b.input.(*os.File); ok {
+		_ = f.SetWriteDeadline(ioDeadline(ctx))
+	}
+	_ = b.actionOutput.SetReadDeadline(ioDeadline(ctx))
 	if _, err = b.input.Write(append(data, '\n')); err != nil {
 		return nil, err
 	}
@@ -189,4 +221,23 @@ func (b *Bridge) Action(request map[string]any) (map[string]any, error) {
 		return nil, fmt.Errorf("native input: %v", result["error"])
 	}
 	return result, nil
+}
+
+func ioDeadline(ctx context.Context) time.Time {
+	deadline := time.Now().Add(15 * time.Second)
+	if caller, ok := ctx.Deadline(); ok && caller.Before(deadline) {
+		deadline = caller
+	}
+	return deadline
+}
+
+// Joining a running callback prevents it from closing a later operation's stream.
+func cancelIO(ctx context.Context, closeStream func()) func() {
+	done := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() { defer close(done); closeStream() })
+	return func() {
+		if !stop() {
+			<-done
+		}
+	}
 }

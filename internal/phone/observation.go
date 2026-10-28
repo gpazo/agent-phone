@@ -28,19 +28,21 @@ func (f Frame) contains(x, y float64) bool {
 }
 
 type Element struct {
-	Ref         string   `json:"ref"`
-	Role        string   `json:"role"`
-	Label       string   `json:"label"`
-	Identifier  string   `json:"identifier,omitempty"`
-	Value       any      `json:"value,omitempty"`
-	Placeholder string   `json:"placeholder,omitempty"`
-	Context     string   `json:"context,omitempty"`
-	Frame       Frame    `json:"frame"`
-	Actionable  bool     `json:"actionable"`
-	Actions     []string `json:"actions,omitempty"`
-	nativeToken string
-	automation  float64
-	identity    targetIdentity
+	NativeHitAt   *time.Time `json:"nativeHitAt,omitempty"`
+	Ref           string     `json:"ref"`
+	Role          string     `json:"role"`
+	Label         string     `json:"label"`
+	Identifier    string     `json:"identifier,omitempty"`
+	Value         any        `json:"value,omitempty"`
+	Placeholder   string     `json:"placeholder,omitempty"`
+	Context       string     `json:"context,omitempty"`
+	Frame         Frame      `json:"frame"`
+	Actionable    bool       `json:"actionable"`
+	Actions       []string   `json:"actions,omitempty"`
+	probeEligible bool
+	nativeToken   string
+	automation    float64
+	identity      targetIdentity
 }
 type Observation struct {
 	ID           string     `json:"id"`
@@ -195,7 +197,7 @@ func decodeTree(tree map[string]any, id string) treeEvidence {
 			key := fmt.Sprintf("%s|%s|%v|%g|%g", r, label, node[ax+"Value"], f.X, f.Y)
 			if !seen[key] {
 				seen[key] = true
-				evidence.elements = append(evidence.elements, Element{Ref: fmt.Sprintf("%s:e%d", id, len(evidence.elements)+1), Role: r, Label: label, Identifier: stringValue(node[ax+"Identifier"]), Value: node[ax+"Value"], Placeholder: placeholder, Context: context, Frame: f, Actionable: actionable, automation: n, identity: semantics})
+				evidence.elements = append(evidence.elements, Element{Ref: fmt.Sprintf("%s:e%d", id, len(evidence.elements)+1), Role: r, Label: label, Identifier: stringValue(node[ax+"Identifier"]), Value: node[ax+"Value"], Placeholder: placeholder, Context: context, Frame: f, Actionable: actionable, probeEligible: local && depth < 32, automation: n, identity: semantics})
 			}
 		}
 		contextLabel, complete := nativeContextLabel(node)
@@ -220,7 +222,8 @@ func decodeTree(tree map[string]any, id string) treeEvidence {
 	visit(tree, nil, true, 0)
 	for i := range evidence.elements {
 		e := &evidence.elements[i]
-		e.Actionable = e.Actionable && evidence.complete && counts[e.identity] == 1
+		e.probeEligible = e.probeEligible && evidence.complete && counts[e.identity] == 1
+		e.Actionable = e.Actionable && e.probeEligible
 	}
 	return evidence
 }
@@ -229,9 +232,27 @@ func sameTarget(e Element, hit map[string]any) bool {
 	return hit != nil && e.identity == identity(hit, e.Context)
 }
 
-func (s *Service) observe(ctx context.Context, p *Phone, screenshot bool) (*Observation, error) {
+func supportedActions(e Element) []string {
+	if !e.Actionable {
+		return nil
+	}
+	switch e.Role {
+	case "textfield":
+		return []string{"type"}
+	case "picker":
+		return []string{"increment", "decrement"}
+	case "scrollview":
+		return []string{"scroll-up", "scroll-down"}
+	default:
+		return []string{"press"}
+	}
+}
+
+func (s *Service) capture(ctx context.Context, p *Phone, query *waitQuery) (*Observation, error) {
 	started := time.Now()
-	p.observation = nil
+	if err := contextError(ctx); err != nil {
+		return nil, err
+	}
 	if p.bridge == nil {
 		b, err := NewBridge(ctx, p.UDID, s.root)
 		if err != nil {
@@ -239,8 +260,12 @@ func (s *Service) observe(ctx context.Context, p *Phone, screenshot bool) (*Obse
 		}
 		p.bridge = b
 	}
-	tree, err := p.bridge.Tree()
+	tree, err := p.bridge.Tree(ctx)
 	if err != nil {
+		p.closeBridge()
+		return nil, err
+	}
+	if err = contextError(ctx); err != nil {
 		p.closeBridge()
 		return nil, err
 	}
@@ -251,23 +276,54 @@ func (s *Service) observe(ctx context.Context, p *Phone, screenshot bool) (*Obse
 	}
 	o := &Observation{ID: randomID(), Device: p.UDID, App: stringValue(root[ax+"Label"]), PID: number(tree["pid"]), CapturedAt: time.Now(), Elements: []Element{}}
 	o.Elements = flatten(root, o.ID)
-	if tree["truncated"] == true {
-		for i := range o.Elements {
+	for i := range o.Elements {
+		if tree["truncated"] == true {
 			o.Elements[i].Actionable = false
+			o.Elements[i].probeEligible = false
 		}
 	}
-	var indices []int
-	var points []map[string]float64
-	for i, e := range o.Elements {
-		if e.Actionable && len(points) < 250 {
-			indices = append(indices, i)
-			points = append(points, map[string]float64{"x": e.Frame.X + e.Frame.Width/2, "y": e.Frame.Y + e.Frame.Height/2})
+	indices := []int{}
+	selected := make(map[int]bool)
+	if query != nil {
+		for i, e := range o.Elements {
+			if !e.probeEligible {
+				continue
+			}
+			for _, condition := range query.conditions {
+				if condition.Evidence == "native-hit" && condition.Where.matches(e, supportedActions(e)) {
+					indices = append(indices, i)
+					selected[i] = true
+					break
+				}
+			}
 		}
+		if len(indices) > 250 {
+			return nil, fail("selector_too_broad", "native-hit selectors require more than 250 probe candidates")
+		}
+	}
+	for i, e := range o.Elements {
+		if e.Actionable && !selected[i] && len(indices) < 250 {
+			indices = append(indices, i)
+		}
+	}
+	points := make([]map[string]float64, 0, len(indices))
+	actions := make(map[int][]string, len(indices))
+	for _, i := range indices {
+		e := o.Elements[i]
+		actions[i] = supportedActions(e)
+		points = append(points, map[string]float64{"x": e.Frame.X + e.Frame.Width/2, "y": e.Frame.Y + e.Frame.Height/2})
+	}
+	for i := range o.Elements {
 		o.Elements[i].Actionable = false
 	}
 	if len(points) > 0 {
-		result, err := p.bridge.Action(map[string]any{"action": "capture-targets", "points": points})
+		result, err := p.bridge.Action(ctx, map[string]any{"action": "capture-targets", "points": points})
 		if err != nil {
+			p.closeBridge()
+			return nil, err
+		}
+		received := time.Now()
+		if err = contextError(ctx); err != nil {
 			p.closeBridge()
 			return nil, err
 		}
@@ -281,45 +337,68 @@ func (s *Service) observe(ctx context.Context, p *Phone, screenshot bool) (*Obse
 			hit, _ := target["tree"].(map[string]any)
 			e := &o.Elements[index]
 			app, appOK := target["app"].(string)
-			context, contextOK := target["context"].(string)
-			if !appOK || app != o.App || !contextOK || context != e.Context || !sameTarget(*e, hit) {
-				e.Actionable = false
+			targetContext, contextOK := target["context"].(string)
+			token := stringValue(target["token"])
+			if !appOK || app != o.App || !contextOK || targetContext != e.Context || token == "" || !sameTarget(*e, hit) {
 				continue
 			}
-			e.nativeToken = stringValue(target["token"])
-			// A target without a native identity is still useful as observation, but
-			// this first backend does not turn it into an unchecked coordinate tap.
-			e.Actionable = e.nativeToken != ""
-			if e.Actionable {
-				switch e.Role {
-				case "textfield":
-					e.Actions = []string{"type"}
-				case "picker":
-					e.Actions = []string{"increment", "decrement"}
-				case "scrollview":
-					e.Actions = []string{"scroll-up", "scroll-down"}
-				default:
-					e.Actions = []string{"press"}
-				}
+			e.NativeHitAt = &received
+			if len(actions[index]) > 0 {
+				e.nativeToken = token
+				e.Actionable = true
+				e.Actions = actions[index]
 			}
 		}
 	}
-	if screenshot {
-		path := filepath.Join(s.data, "artifacts", p.UDID, o.ID+".jpg")
-		if err := mkdir(filepath.Dir(path)); err != nil {
-			return nil, err
-		}
-		if _, err := run(ctx, "/usr/bin/xcrun", "simctl", "io", p.UDID, "screenshot", "--type=jpeg", path); err != nil {
-			return nil, err
-		}
-		now := time.Now()
-		o.ScreenshotAt = &now
-		o.Screenshot = path
-	}
 	o.DurationMS = time.Since(started).Milliseconds()
+	return o, nil
+}
+
+func (s *Service) screenshot(ctx context.Context, p *Phone, o *Observation) error {
+	path := filepath.Join(s.data, "artifacts", p.UDID, o.ID+".jpg")
+	if err := mkdir(filepath.Dir(path)); err != nil {
+		return err
+	}
+	if _, err := s.command(ctx, "/usr/bin/xcrun", "simctl", "io", p.UDID, "screenshot", "--type=jpeg", path); err != nil {
+		return err
+	}
+	now := time.Now()
+	o.ScreenshotAt = &now
+	o.Screenshot = path
+	return contextError(ctx)
+}
+
+func (s *Service) publish(ctx context.Context, p *Phone, o *Observation) error {
+	s.event(p.UDID, "observe", map[string]any{"observation": o.ID, "durationMs": o.DurationMS, "screenshot": o.Screenshot})
+	if err := contextError(ctx); err != nil {
+		return err
+	}
+	if p.lease != nil {
+		if err := validateLease(p.lease, p.lease.Token, time.Now()); err != nil {
+			return err
+		}
+	}
 	p.observation = o
 	p.lastObservation = o
-	s.event(p.UDID, "observe", map[string]any{"observation": o.ID, "durationMs": o.DurationMS, "screenshot": o.Screenshot})
+	return nil
+}
+
+func (s *Service) observe(ctx context.Context, p *Phone, screenshot bool) (*Observation, error) {
+	started := time.Now()
+	p.observation = nil
+	o, err := s.capture(ctx, p, nil)
+	if err != nil {
+		return nil, err
+	}
+	if screenshot {
+		if err = s.screenshot(ctx, p, o); err != nil {
+			return nil, err
+		}
+	}
+	o.DurationMS = time.Since(started).Milliseconds()
+	if err = s.publish(ctx, p, o); err != nil {
+		return nil, err
+	}
 	return o, nil
 }
 
@@ -353,7 +432,7 @@ func (s *Service) act(ctx context.Context, p *Phone, a Params) (any, error) {
 	// Consume the observation even if input fails: repeating a mutation is never
 	// an automatic recovery strategy.
 	p.observation = nil
-	result, err := p.bridge.Action(map[string]any{"action": "validate-target", "token": target.nativeToken})
+	result, err := p.bridge.Action(ctx, map[string]any{"action": "validate-target", "token": target.nativeToken})
 	if err != nil {
 		p.closeBridge()
 		return nil, err
@@ -379,7 +458,7 @@ func (s *Service) act(ctx context.Context, p *Phone, a Params) (any, error) {
 	if a.Action == "type" {
 		request["text"] = a.Text
 	}
-	if _, err = p.bridge.Action(request); err != nil {
+	if _, err = p.bridge.Action(ctx, request); err != nil {
 		p.closeBridge()
 		return nil, err
 	}
