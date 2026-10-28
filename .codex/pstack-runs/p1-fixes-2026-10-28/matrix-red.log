@@ -1,0 +1,27 @@
+--- FAIL: TestMatrixRejectsIncompatibleManagedTarget (0.00s)
+    --- FAIL: TestMatrixRejectsIncompatibleManagedTarget/runtime (0.00s)
+        matrix_regression_test.go:92: expected matrix target identity rejection, got {Name:one Device:managed Status:failed Error:Device is controlled by sentinel until 2026-10-28T09:42:20-07:00 Build:0x6591e3188ee0 Observation:<nil> ElapsedMS:0}
+    --- FAIL: TestMatrixRejectsIncompatibleManagedTarget/type (0.00s)
+        matrix_regression_test.go:92: expected matrix target identity rejection, got {Name:one Device:managed Status:failed Error:Device is controlled by sentinel until 2026-10-28T09:42:20-07:00 Build:0x6591e3188fc0 Observation:<nil> ElapsedMS:0}
+    --- FAIL: TestMatrixRejectsIncompatibleManagedTarget/missing (0.00s)
+        matrix_regression_test.go:92: expected matrix target identity rejection, got {Name:one Device:managed Status:failed Error:Device is controlled by sentinel until 2026-10-28T09:42:20-07:00 Build:0x6591e3189030 Observation:<nil> ElapsedMS:0}
+    --- FAIL: TestMatrixRejectsIncompatibleManagedTarget/duplicate (0.00s)
+        matrix_regression_test.go:92: expected matrix target identity rejection, got {Name:one Device:managed Status:failed Error:Device is controlled by sentinel until 2026-10-28T09:42:20-07:00 Build:0x6591e31890a0 Observation:<nil> ElapsedMS:0}
+    --- FAIL: TestMatrixRejectsIncompatibleManagedTarget/renamed (0.00s)
+        matrix_regression_test.go:92: expected matrix target identity rejection, got {Name:one Device:managed Status:failed Error:Device is controlled by sentinel until 2026-10-28T09:42:20-07:00 Build:0x6591e3189110 Observation:<nil> ElapsedMS:0}
+--- FAIL: TestResultRetainsFailedMatrixReport (0.00s)
+    matrix_regression_test.go:101: partial report lost: {OK:false Result:<nil> Error:one variant failed}
+--- FAIL: TestMatrixBuildFailureRetainsEveryRow (0.00s)
+    matrix_regression_test.go:110: expected matrix_failed, got Xcode build failed: fixture build failure; log: /var/folders/fc/3k_9n9157tsctn_dg4w_r_sh0000gn/T/TestMatrixBuildFailureRetainsEveryRow3251109699/001/builds/732577bf7934d05c/agent-phone-build.log
+    matrix_regression_test.go:115: failed build lost rows: map[string]interface {}(nil)
+--- FAIL: TestMatrixRejectsAliasedAndNestedOutputClaimsBeforeBuild (0.00s)
+    --- FAIL: TestMatrixRejectsAliasedAndNestedOutputClaimsBeforeBuild/false (0.00s)
+        matrix_regression_test.go:145: conflicting claims reached build: calls=1 err=Xcode build failed: build should not run; log: /var/folders/fc/3k_9n9157tsctn_dg4w_r_sh0000gn/T/TestMatrixRejectsAliasedAndNestedOutputClaimsBeforeBuildfalse192636868/002/output/agent-phone-build.log
+    --- FAIL: TestMatrixRejectsAliasedAndNestedOutputClaimsBeforeBuild/true (0.00s)
+        matrix_regression_test.go:145: conflicting claims reached build: calls=1 err=Xcode build failed: build should not run; log: /var/folders/fc/3k_9n9157tsctn_dg4w_r_sh0000gn/T/TestMatrixRejectsAliasedAndNestedOutputClaimsBeforeBuildtrue1098623760/002/output/agent-phone-build.log
+--- FAIL: TestBuildProductsSurviveLaterBuild (0.00s)
+    matrix_regression_test.go:189: build A changed: marker="B" err=<nil>
+    matrix_regression_test.go:193: build A log changed: "build B\n" <nil>
+FAIL
+FAIL	agent-phone/internal/phone	0.014s
+FAIL

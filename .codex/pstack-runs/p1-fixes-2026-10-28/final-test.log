@@ -1,0 +1,10 @@
+/Users/gp/src/agent-phone/.tools/go/bin/go test -race ./...
+ok  	agent-phone/cmd/agent-phone	(cached)
+ok  	agent-phone/internal/phone	2.365s
+python3 -m unittest discover -s scripts -p 'test_*.py'
+..Status: failed Evidence: /var/folders/fc/3k_9n9157tsctn_dg4w_r_sh0000gn/T/tmpl6mhz6p4/report.json
+...
+----------------------------------------------------------------------
+Ran 5 tests in 0.002s
+
+OK

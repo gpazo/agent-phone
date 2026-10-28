@@ -1,0 +1,3 @@
+# Implementation arena rubric
+
+Score 1–5 each: (1) complete native → shared cache → CLI/MCP/dashboard integration using proven persistent capture; (2) bounded lifecycle, teardown, reconnect, exact identity, cursor/freshness and independence from lease/AX state; (3) bounded memory/backpressure including slow UI/readers; (4) small maintainable type-centered API and error handling; (5) meaningful race/lifecycle/protocol verification and honest runtime gaps. Compile/runtime defects are blockers to shipping regardless of aggregate score. Parent does final native/Swift build and four-phone real verification. Same-family model panel lacks family diversity.

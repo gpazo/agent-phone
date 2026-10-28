@@ -1,0 +1,10 @@
+# Source provenance
+
+* `third_party/simslim`: root Go library and tests from https://github.com/MobAI-App/simslim at `2c68da93700aa1a1c45ce31a7ea9f7cac2174ddc`. MIT, copyright Interlap. Original license retained. The module file is reduced to the library's standard-library-only dependencies. No daemon profiles are changed.
+* `native/SimulatorActions.m` and `native/SimulatorTargets.m`: extracted from https://github.com/gpazo/jev-vphone-cli at `1606fbbe91e956b5c1e6fc481d5a3fcfc9f85b90`, descended from vphone-cli. MIT, copyright 2026 @Lakr233. License retained as `native/LICENSE.vphone`. The host transport and tree normalization are adapted from the same repository's simulator implementation. The P1 repairs add host-side app/context/attribute agreement, ambiguity checks, and helper recovery; the two native source files remain unchanged from this revision.
+* `SimulatorFrameworkBridge-iOS`: idb v1.6.1, https://github.com/facebook/idb. MIT. Setup downloads the official release, verifies its SHA-256, and retains the license locally. This process reads the native accessibility tree inside a Simulator.
+* Wikipedia demo: https://github.com/wikimedia/wikipedia-ios, MIT. Kept in an ignored checkout with its original license; the resolved revision is recorded by the setup script. Wikipedia is a test application, not part of agent-phone's distribution.
+
+The Jev model, cloud inference clients, firmware patchers and privileged VM entitlements are not included.
+
+* `native/AgentPhoneVision.m` adapts the locally validated CoreSimulator IOSurface prototype. Runtime selector signatures and display selection were researched in [facebook/idb](https://github.com/facebook/idb/tree/1387b360a9dcad34573cb1d9f277e5a0eacfd804), especially `FramebufferSurface.swift`, `Framebuffer.swift`, and the CoreSimulator private headers. The referenced revision is `1387b360a9dcad34573cb1d9f277e5a0eacfd804`. MIT, copyright Meta Platforms, Inc. and affiliates. The license is retained as `native/LICENSE.idb`. No idb framebuffer runtime dependency is added.

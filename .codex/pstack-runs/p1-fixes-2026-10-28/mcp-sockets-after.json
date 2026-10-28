@@ -1,0 +1,7 @@
+{
+  "calls": 12,
+  "unix_fds_before": [],
+  "unix_fds_after": [
+    "f4"
+  ]
+}

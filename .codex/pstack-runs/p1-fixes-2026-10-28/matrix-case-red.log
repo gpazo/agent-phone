@@ -1,0 +1,12 @@
+--- FAIL: TestMatrixRejectsCaseAliasedOutputClaimsBeforeBuild (0.01s)
+    --- FAIL: TestMatrixRejectsCaseAliasedOutputClaimsBeforeBuild/existing (0.00s)
+        build_case_test.go:62: case aliases reached build: calls=2 err=matrix failed: 2 failed, 0 skipped; report: /var/folders/fc/3k_9n9157tsctn_dg4w_r_sh0000gn/T/TestMatrixRejectsCaseAliasedOutputClaimsBeforeBuildexisting2787015474/002/runs/1b41a281ac26dc1aacae9c9fadb0d8a4.json
+    --- FAIL: TestMatrixRejectsCaseAliasedOutputClaimsBeforeBuild/missing (0.00s)
+        build_case_test.go:62: case aliases reached build: calls=2 err=matrix failed: 2 failed, 0 skipped; report: /var/folders/fc/3k_9n9157tsctn_dg4w_r_sh0000gn/T/TestMatrixRejectsCaseAliasedOutputClaimsBeforeBuildmissing3866356039/002/runs/93c8596bb4ebb2b55f8773f0895185c6.json
+    --- FAIL: TestMatrixRejectsCaseAliasedOutputClaimsBeforeBuild/nested (0.00s)
+        build_case_test.go:62: case aliases reached build: calls=2 err=matrix failed: 2 failed, 0 skipped; report: /var/folders/fc/3k_9n9157tsctn_dg4w_r_sh0000gn/T/TestMatrixRejectsCaseAliasedOutputClaimsBeforeBuildnested990115461/002/runs/e15e22b93fc6c06f8d23e06af3ee232e.json
+--- FAIL: TestBuildCanonicalizesCaseAliasedProjectIdentity (0.00s)
+    build_case_test.go:88: same project got distinct identities: {Device: Name: DeviceType: Runtime: Owner: Lease: Observation: Ref: Action: Text: Screenshot:false App: BundleID: Arguments:[] Appearance: ContentSize: Except:[] Keep:[] Project:/private/var/folders/fc/3k_9n9157tsctn_dg4w_r_sh0000gn/T/TestBuildCanonicalizesCaseAliasedProjectIdentity2159201986/001/ExistingAncestor/App.xcodeproj Scheme:App Configuration:Debug DerivedData:/private/var/folders/fc/3k_9n9157tsctn_dg4w_r_sh0000gn/T/TestBuildCanonicalizesCaseAliasedProjectIdentity2159201986/002/builds/81696cf67ad0268cd954617d9f84e3bb BuildSettings:map[] Matrix:} {Device: Name: DeviceType: Runtime: Owner: Lease: Observation: Ref: Action: Text: Screenshot:false App: BundleID: Arguments:[] Appearance: ContentSize: Except:[] Keep:[] Project:/private/var/folders/fc/3k_9n9157tsctn_dg4w_r_sh0000gn/T/TestBuildCanonicalizesCaseAliasedProjectIdentity2159201986/001/existingancestor/app.xcodeproj Scheme:App Configuration:Debug DerivedData:/private/var/folders/fc/3k_9n9157tsctn_dg4w_r_sh0000gn/T/TestBuildCanonicalizesCaseAliasedProjectIdentity2159201986/002/builds/5b02a6c5b40bb63524cba71856de940c BuildSettings:map[] Matrix:}
+FAIL
+FAIL	agent-phone/internal/phone	0.019s
+FAIL

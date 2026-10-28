@@ -1,0 +1,7 @@
+--- FAIL: TestRequestReusesUnixConnectionAcrossSequentialCalls (0.00s)
+    main_test.go:87: 12 completed sequential requests opened 12 Unix connections, want at most 1
+--- FAIL: TestRequestBoundsConnectionsAcrossConcurrentWaves (0.00s)
+    main_test.go:132: two waves of 8 concurrent requests opened 16 Unix connections, want at most 8
+FAIL
+FAIL	agent-phone/cmd/agent-phone	0.011s
+FAIL

@@ -1,0 +1,9 @@
+/Users/gp/src/agent-phone/.cache/p1-fixes-2026-10-28/matrix/.tools/go/bin/go test -race ./...
+?   	agent-phone/cmd/agent-phone	[no test files]
+ok  	agent-phone/internal/phone	(cached)
+python3 -m unittest discover -s scripts -p 'test_*.py'
+....
+----------------------------------------------------------------------
+Ran 4 tests in 0.001s
+
+OK

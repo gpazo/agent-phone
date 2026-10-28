@@ -1,0 +1,17 @@
+=== RUN   TestMatrixRejectsCaseAliasedOutputClaimsBeforeBuild
+=== RUN   TestMatrixRejectsCaseAliasedOutputClaimsBeforeBuild/existing
+=== RUN   TestMatrixRejectsCaseAliasedOutputClaimsBeforeBuild/missing
+=== RUN   TestMatrixRejectsCaseAliasedOutputClaimsBeforeBuild/nested
+--- PASS: TestMatrixRejectsCaseAliasedOutputClaimsBeforeBuild (0.01s)
+    --- PASS: TestMatrixRejectsCaseAliasedOutputClaimsBeforeBuild/existing (0.00s)
+    --- PASS: TestMatrixRejectsCaseAliasedOutputClaimsBeforeBuild/missing (0.00s)
+    --- PASS: TestMatrixRejectsCaseAliasedOutputClaimsBeforeBuild/nested (0.00s)
+=== RUN   TestBuildCanonicalizesCaseAliasedProjectIdentity
+--- PASS: TestBuildCanonicalizesCaseAliasedProjectIdentity (0.00s)
+=== RUN   TestCaseInsensitivePathsPreserveExistingUnicodeAndRejectMissingUnicode
+--- PASS: TestCaseInsensitivePathsPreserveExistingUnicodeAndRejectMissingUnicode (0.00s)
+=== RUN   TestCaseSensitiveOutputPathsRemainDistinct
+    build_case_test.go:149: fixture volume uses case-insensitive names
+--- SKIP: TestCaseSensitiveOutputPathsRemainDistinct (0.00s)
+PASS
+ok  	agent-phone/internal/phone	1.033s

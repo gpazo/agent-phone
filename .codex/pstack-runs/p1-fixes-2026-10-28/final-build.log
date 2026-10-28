@@ -1,0 +1,2 @@
+/Users/gp/src/agent-phone/.tools/go/bin/go build -trimpath -o build/agent-phone ./cmd/agent-phone
+xcrun --sdk iphonesimulator clang -fobjc-arc -O2 -arch arm64 -mios-simulator-version-min=17.0 -framework Foundation native/main.m native/SimulatorActions.m native/SimulatorTargets.m -o build/AgentPhoneActions

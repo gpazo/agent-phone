@@ -1,0 +1,43 @@
+{
+  "name": "Wikipedia",
+  "build": {
+    "project": "../.cache/wikipedia-ios/Wikipedia.xcodeproj",
+    "scheme": "Wikipedia",
+    "configuration": "Debug",
+    "derivedData": "../.cache/builds/wikipedia-debug"
+  },
+  "deviceType": "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro",
+  "runtime": "com.apple.CoreSimulator.SimRuntime.iOS-26-5",
+  "concurrency": 4,
+  "keepRunning": true,
+  "variants": [
+    {
+      "name": "Light",
+      "appearance": "light",
+      "contentSize": "large",
+      "arguments": [],
+      "steps": []
+    },
+    {
+      "name": "Dark \u00b7 Large text",
+      "appearance": "dark",
+      "contentSize": "extra-extra-extra-large",
+      "arguments": [],
+      "steps": []
+    },
+    {
+      "name": "Light \u00b7 Large text",
+      "appearance": "light",
+      "contentSize": "extra-extra-extra-large",
+      "arguments": [],
+      "steps": []
+    },
+    {
+      "name": "Dark",
+      "appearance": "dark",
+      "contentSize": "large",
+      "arguments": [],
+      "steps": []
+    }
+  ]
+}

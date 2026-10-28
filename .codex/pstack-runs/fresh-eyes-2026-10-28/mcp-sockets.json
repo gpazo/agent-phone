@@ -1,0 +1,22 @@
+{
+  "surface": "persistent MCP process against existing service, rejected observe calls only",
+  "calls": 12,
+  "unix_fds_before": [],
+  "unix_fds_after": [
+    "f4",
+    "f5",
+    "f6",
+    "f7",
+    "f8",
+    "f9",
+    "f10",
+    "f11",
+    "f12",
+    "f13",
+    "f14",
+    "f15"
+  ],
+  "errors": [
+    "unmanaged_device"
+  ]
+}

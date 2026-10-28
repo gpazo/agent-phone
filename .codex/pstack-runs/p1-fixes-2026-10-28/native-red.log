@@ -1,0 +1,63 @@
+--- FAIL: TestObserveNativeReceiptJoinRejectsChangedEvidence (2.96s)
+    --- FAIL: TestObserveNativeReceiptJoinRejectsChangedEvidence/app (0.18s)
+        native_regression_test.go:133: changed or incomplete evidence received an actionable token: phone.Element{Ref:"9ae6691058013bc246681bb9e20941c9:e2", Role:"button", Label:"Search", Identifier:"search", Value:"old", Placeholder:"", Frame:phone.Frame{X:20, Y:30, Width:100, Height:40}, Actionable:true, Actions:[]string{"press"}, nativeToken:"capture:0", automation:9}
+        native_regression_test.go:137: unsafe input accepted: error=<nil> inputs=1
+    --- FAIL: TestObserveNativeReceiptJoinRejectsChangedEvidence/missing_app (0.18s)
+        native_regression_test.go:133: changed or incomplete evidence received an actionable token: phone.Element{Ref:"d3bed54967de7bbb1b9841e5584e83c4:e2", Role:"button", Label:"Search", Identifier:"search", Value:"old", Placeholder:"", Frame:phone.Frame{X:20, Y:30, Width:100, Height:40}, Actionable:true, Actions:[]string{"press"}, nativeToken:"capture:0", automation:9}
+        native_regression_test.go:137: unsafe input accepted: error=<nil> inputs=1
+    --- FAIL: TestObserveNativeReceiptJoinRejectsChangedEvidence/context (0.18s)
+        native_regression_test.go:133: changed or incomplete evidence received an actionable token: phone.Element{Ref:"efa1bbad17056e7e8fa155e02955ca83:e2", Role:"button", Label:"Search", Identifier:"search", Value:"old", Placeholder:"", Frame:phone.Frame{X:20, Y:30, Width:100, Height:40}, Actionable:true, Actions:[]string{"press"}, nativeToken:"capture:0", automation:9}
+        native_regression_test.go:137: unsafe input accepted: error=<nil> inputs=1
+    --- FAIL: TestObserveNativeReceiptJoinRejectsChangedEvidence/missing_context (0.18s)
+        native_regression_test.go:133: changed or incomplete evidence received an actionable token: phone.Element{Ref:"cd85753e2eedb57e5ad8713b1b211e4f:e2", Role:"button", Label:"Search", Identifier:"search", Value:"old", Placeholder:"", Frame:phone.Frame{X:20, Y:30, Width:100, Height:40}, Actionable:true, Actions:[]string{"press"}, nativeToken:"capture:0", automation:9}
+        native_regression_test.go:137: unsafe input accepted: error=<nil> inputs=1
+    --- FAIL: TestObserveNativeReceiptJoinRejectsChangedEvidence/value (0.19s)
+        native_regression_test.go:133: changed or incomplete evidence received an actionable token: phone.Element{Ref:"d027e337aecb25decec7eca7134c4245:e2", Role:"button", Label:"Search", Identifier:"search", Value:"old", Placeholder:"", Frame:phone.Frame{X:20, Y:30, Width:100, Height:40}, Actionable:true, Actions:[]string{"press"}, nativeToken:"capture:0", automation:9}
+        native_regression_test.go:137: unsafe input accepted: error=<nil> inputs=1
+    --- FAIL: TestObserveNativeReceiptJoinRejectsChangedEvidence/identifier_added (0.18s)
+        native_regression_test.go:133: changed or incomplete evidence received an actionable token: phone.Element{Ref:"28d6734b9044fd9248b8f0d4a26d5623:e2", Role:"button", Label:"Search", Identifier:"", Value:"old", Placeholder:"", Frame:phone.Frame{X:20, Y:30, Width:100, Height:40}, Actionable:true, Actions:[]string{"press"}, nativeToken:"capture:0", automation:9}
+        native_regression_test.go:137: unsafe input accepted: error=<nil> inputs=1
+    --- FAIL: TestObserveNativeReceiptJoinRejectsChangedEvidence/identifier_missing_versus_empty (0.18s)
+        native_regression_test.go:133: changed or incomplete evidence received an actionable token: phone.Element{Ref:"d2b4a7f82e987b041bf2db34e97d7b11:e2", Role:"button", Label:"Search", Identifier:"", Value:"old", Placeholder:"", Frame:phone.Frame{X:20, Y:30, Width:100, Height:40}, Actionable:true, Actions:[]string{"press"}, nativeToken:"capture:0", automation:9}
+        native_regression_test.go:137: unsafe input accepted: error=<nil> inputs=1
+    --- FAIL: TestObserveNativeReceiptJoinRejectsChangedEvidence/class (0.18s)
+        native_regression_test.go:133: changed or incomplete evidence received an actionable token: phone.Element{Ref:"d0f756de0dea09c8780a5349657daf26:e2", Role:"button", Label:"Search", Identifier:"search", Value:"old", Placeholder:"", Frame:phone.Frame{X:20, Y:30, Width:100, Height:40}, Actionable:true, Actions:[]string{"press"}, nativeToken:"capture:0", automation:9}
+        native_regression_test.go:137: unsafe input accepted: error=<nil> inputs=1
+    --- FAIL: TestObserveNativeReceiptJoinRejectsChangedEvidence/placeholder (0.18s)
+        native_regression_test.go:133: changed or incomplete evidence received an actionable token: phone.Element{Ref:"867a9aae140963b227524069bded4c58:e2", Role:"button", Label:"Search", Identifier:"search", Value:"old", Placeholder:"", Frame:phone.Frame{X:20, Y:30, Width:100, Height:40}, Actionable:true, Actions:[]string{"press"}, nativeToken:"capture:0", automation:9}
+        native_regression_test.go:137: unsafe input accepted: error=<nil> inputs=1
+    --- FAIL: TestObserveNativeReceiptJoinRejectsChangedEvidence/duplicate_before_dedup (0.19s)
+        native_regression_test.go:133: changed or incomplete evidence received an actionable token: phone.Element{Ref:"d93c3466f42e69e5b3216b9ca1be7b83:e2", Role:"button", Label:"Search", Identifier:"search", Value:"old", Placeholder:"", Frame:phone.Frame{X:20, Y:30, Width:100, Height:40}, Actionable:true, Actions:[]string{"press"}, nativeToken:"capture:0", automation:9}
+        native_regression_test.go:137: unsafe input accepted: error=<nil> inputs=1
+    --- FAIL: TestObserveNativeReceiptJoinRejectsChangedEvidence/duplicate_elsewhere (0.19s)
+        native_regression_test.go:133: changed or incomplete evidence received an actionable token: phone.Element{Ref:"d869da4f383865027a2410c6c796a144:e2", Role:"button", Label:"Search", Identifier:"search", Value:"old", Placeholder:"", Frame:phone.Frame{X:20, Y:30, Width:100, Height:40}, Actionable:true, Actions:[]string{"press"}, nativeToken:"capture:0", automation:9}
+        native_regression_test.go:137: unsafe input accepted: error=<nil> inputs=1
+    --- FAIL: TestObserveNativeReceiptJoinRejectsChangedEvidence/visible_unresolved_remote (0.18s)
+        native_regression_test.go:133: changed or incomplete evidence received an actionable token: phone.Element{Ref:"19425ca510c99e5341ab56784a1af4b0:e2", Role:"button", Label:"Search", Identifier:"search", Value:"old", Placeholder:"", Frame:phone.Frame{X:20, Y:30, Width:100, Height:40}, Actionable:true, Actions:[]string{"press"}, nativeToken:"capture:0", automation:9}
+        native_regression_test.go:137: unsafe input accepted: error=<nil> inputs=1
+    --- FAIL: TestObserveNativeReceiptJoinRejectsChangedEvidence/visible_web (0.19s)
+        native_regression_test.go:133: changed or incomplete evidence received an actionable token: phone.Element{Ref:"72b0c62cd96a073dc61639722171200f:e2", Role:"button", Label:"Search", Identifier:"search", Value:"old", Placeholder:"", Frame:phone.Frame{X:20, Y:30, Width:100, Height:40}, Actionable:true, Actions:[]string{"press"}, nativeToken:"capture:0", automation:9}
+        native_regression_test.go:137: unsafe input accepted: error=<nil> inputs=1
+    --- FAIL: TestObserveNativeReceiptJoinRejectsChangedEvidence/malformed_children (0.19s)
+        native_regression_test.go:133: changed or incomplete evidence received an actionable token: phone.Element{Ref:"f87150756f760f70b6e41e2c03d61e8e:e2", Role:"button", Label:"Search", Identifier:"search", Value:"old", Placeholder:"", Frame:phone.Frame{X:20, Y:30, Width:100, Height:40}, Actionable:true, Actions:[]string{"press"}, nativeToken:"capture:0", automation:9}
+        native_regression_test.go:137: unsafe input accepted: error=<nil> inputs=1
+    --- FAIL: TestObserveNativeReceiptJoinRejectsChangedEvidence/truncated_tree (0.18s)
+        native_regression_test.go:133: changed or incomplete evidence received an actionable token: phone.Element{Ref:"1c0550486dbfd41ff182cc33836e0a0c:e2", Role:"button", Label:"Search", Identifier:"search", Value:"old", Placeholder:"", Frame:phone.Frame{X:20, Y:30, Width:100, Height:40}, Actionable:true, Actions:[]string{"press"}, nativeToken:"capture:0", automation:9}
+        native_regression_test.go:137: unsafe input accepted: error=<nil> inputs=1
+    --- FAIL: TestObserveNativeReceiptJoinRejectsChangedEvidence/duplicate_after_capture_limit (0.19s)
+        native_regression_test.go:133: changed or incomplete evidence received an actionable token: phone.Element{Ref:"c62dedf6ab0f89d76462e801a4370bcf:e2", Role:"button", Label:"Search", Identifier:"search", Value:"old", Placeholder:"", Frame:phone.Frame{X:20, Y:30, Width:100, Height:40}, Actionable:true, Actions:[]string{"press"}, nativeToken:"capture:0", automation:9}
+        native_regression_test.go:137: unsafe input accepted: error=<nil> inputs=1
+--- FAIL: TestActNativeValidationFailureDiscardsBridge (0.01s)
+    --- FAIL: TestActNativeValidationFailureDiscardsBridge/timeout (0.00s)
+        native_regression_test.go:197: failed validation retained helper or sent input: closed=false bridge=true observation=false inputs=0
+    --- FAIL: TestActNativeValidationFailureDiscardsBridge/malformed_reply (0.00s)
+        native_regression_test.go:197: failed validation retained helper or sent input: closed=false bridge=true observation=false inputs=0
+    --- FAIL: TestActNativeValidationFailureDiscardsBridge/oversized_reply (0.00s)
+        native_regression_test.go:197: failed validation retained helper or sent input: closed=false bridge=true observation=false inputs=0
+    --- FAIL: TestActNativeValidationFailureDiscardsBridge/semantic_rejection (0.00s)
+        native_regression_test.go:197: failed validation retained helper or sent input: closed=false bridge=true observation=false inputs=0
+    --- FAIL: TestActNativeValidationFailureDiscardsBridge/invalid_frame (0.00s)
+        native_regression_test.go:197: failed validation retained helper or sent input: closed=false bridge=true observation=false inputs=0
+FAIL
+FAIL	agent-phone/internal/phone	2.971s
+FAIL

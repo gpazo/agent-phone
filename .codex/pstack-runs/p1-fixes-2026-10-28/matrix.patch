@@ -1,0 +1,1006 @@
+diff --git a/internal/phone/build.go b/internal/phone/build.go
+index 9930e88..93fd756 100644
+--- a/internal/phone/build.go
++++ b/internal/phone/build.go
+@@ -11,6 +11,7 @@ import (
+ 	"path/filepath"
+ 	"sort"
+ 	"strings"
++	"syscall"
+ 	"time"
+ )
+ 
+@@ -30,90 +31,236 @@ type BuildResult struct {
+ 
+ func buildKey(a Params) string {
+ 	b, _ := json.Marshal(struct {
+-		Project, Scheme, Configuration string
+-		Settings                       map[string]string
+-	}{a.Project, a.Scheme, a.Configuration, a.BuildSettings})
++		Project, Scheme, Configuration, DerivedData string
++		Settings                                    map[string]string
++	}{a.Project, a.Scheme, a.Configuration, a.DerivedData, a.BuildSettings})
+ 	h := sha256.Sum256(b)
+-	return hex.EncodeToString(h[:8])
++	return hex.EncodeToString(h[:16])
+ }
+-func (s *Service) build(ctx context.Context, a Params) (any, error) {
++
++func canonicalPath(path string) (string, error) {
++	absolute, err := filepath.Abs(path)
++	if err != nil {
++		return "", err
++	}
++	ancestor := absolute
++	var missing []string
++	for {
++		resolved, err := filepath.EvalSymlinks(ancestor)
++		if err == nil {
++			for i := len(missing) - 1; i >= 0; i-- {
++				resolved = filepath.Join(resolved, missing[i])
++			}
++			return resolved, nil
++		}
++		if !os.IsNotExist(err) {
++			return "", err
++		}
++		if _, statErr := os.Lstat(ancestor); statErr == nil {
++			return "", err
++		}
++		parent := filepath.Dir(ancestor)
++		if parent == ancestor {
++			return "", err
++		}
++		missing = append(missing, filepath.Base(ancestor))
++		ancestor = parent
++	}
++}
++func pathsOverlap(a, b string) bool {
++	return a == b || strings.HasPrefix(a, b+string(filepath.Separator)) || strings.HasPrefix(b, a+string(filepath.Separator)) || a == string(filepath.Separator) || b == string(filepath.Separator)
++}
++func (s *Service) normalizeBuild(a Params) (Params, error) {
+ 	if a.Project == "" || a.Scheme == "" {
+-		return nil, fmt.Errorf("project and scheme are required")
++		return a, fmt.Errorf("project and scheme are required")
+ 	}
+-	project, err := filepath.Abs(a.Project)
++	project, err := canonicalPath(a.Project)
+ 	if err != nil {
+-		return nil, err
++		return a, err
+ 	}
+-	a.Project = project
+-	if _, err = os.Stat(project); err != nil {
+-		return nil, err
++	info, err := os.Stat(project)
++	if err != nil {
++		return a, err
+ 	}
+-	kind := "-project"
+-	if filepath.Ext(project) == ".xcworkspace" {
+-		kind = "-workspace"
+-	} else if filepath.Ext(project) != ".xcodeproj" {
+-		return nil, fmt.Errorf("project must be .xcodeproj or .xcworkspace")
++	if !info.IsDir() || (filepath.Ext(project) != ".xcodeproj" && filepath.Ext(project) != ".xcworkspace") {
++		return a, fmt.Errorf("project must be an .xcodeproj or .xcworkspace directory")
+ 	}
++	a.Project = project
+ 	if a.Configuration == "" {
+ 		a.Configuration = "Debug"
+ 	}
+-	s.buildMu.Lock()
+-	defer s.buildMu.Unlock()
+-	started := time.Now()
+-	dir := filepath.Join(s.data, "builds", buildKey(a))
+-	if a.DerivedData != "" {
+-		if !filepath.IsAbs(a.DerivedData) {
+-			return nil, fmt.Errorf("derivedData must be absolute")
++	if a.Configuration == "." || a.Configuration == ".." || strings.ContainsAny(a.Configuration, "/\\") {
++		return a, fmt.Errorf("configuration must be a single directory name")
++	}
++	for key := range a.BuildSettings {
++		switch key {
++		case "SYMROOT", "OBJROOT", "DSTROOT", "BUILD_DIR", "BUILD_ROOT", "CONFIGURATION_BUILD_DIR", "CONFIGURATION_TEMP_DIR", "PROJECT_TEMP_DIR", "TARGET_TEMP_DIR", "DERIVED_FILE_DIR", "DERIVED_FILES_DIR", "DERIVED_SOURCES_DIR", "SHARED_PRECOMPS_DIR", "TARGET_BUILD_DIR", "BUILT_PRODUCTS_DIR", "INSTALL_PATH", "DEPLOYMENT_LOCATION", "PROJECT_TEMP_ROOT", "TEMP_DIR", "TEMP_ROOT", "MODULE_CACHE_DIR", "CLANG_MODULE_CACHE_PATH", "SDK_STAT_CACHE_DIR", "INDEX_DATA_STORE_DIR", "DWARF_DSYM_FOLDER_PATH", "WRAPPER_NAME", "FULL_PRODUCT_NAME", "CONTENTS_FOLDER_PATH", "EXECUTABLE_FOLDER_PATH", "UNLOCALIZED_RESOURCES_FOLDER_PATH":
++			return a, fmt.Errorf("unsupported output-redirecting build setting %q", key)
++		}
++		if key == "" || strings.ContainsAny(key, "= \t\n-") || strings.HasPrefix(key, "CODE_SIGN") || key == "SDKROOT" || key == "ARCHS" {
++			return a, fmt.Errorf("unsupported build setting %q", key)
++		}
++	}
++	if len(a.BuildSettings) == 0 {
++		a.BuildSettings = nil
++	}
++	if a.DerivedData == "" {
++		a.DerivedData = filepath.Join(s.data, "builds", buildKey(a))
++	} else if !filepath.IsAbs(a.DerivedData) {
++		return a, fmt.Errorf("derivedData must be absolute")
++	}
++	a.DerivedData, err = canonicalPath(a.DerivedData)
++	if err != nil {
++		return a, err
++	}
++	if info, err := os.Stat(a.DerivedData); err == nil && !info.IsDir() {
++		return a, fmt.Errorf("derivedData must be a directory")
++	} else if err != nil && !os.IsNotExist(err) {
++		return a, err
++	}
++	artifacts, err := canonicalPath(filepath.Join(s.data, "build-artifacts"))
++	if err != nil {
++		return a, err
++	}
++	if pathsOverlap(a.DerivedData, artifacts) {
++		return a, fmt.Errorf("derivedData overlaps immutable build artifacts")
++	}
++	return a, nil
++}
++func validateBuildClaims(specs []Params) error {
++	for i, a := range specs {
++		for _, b := range specs[:i] {
++			if buildKey(a) != buildKey(b) && pathsOverlap(a.DerivedData, b.DerivedData) {
++				return fmt.Errorf("different build specs claim overlapping derivedData directories %q and %q", a.DerivedData, b.DerivedData)
++			}
+ 		}
+-		dir = a.DerivedData
+ 	}
+-	if err = mkdir(dir); err != nil {
++	return nil
++}
++
++func acquireBuildLock(ctx context.Context) (*os.File, error) {
++	lock, err := os.OpenFile(filepath.Join("/tmp", fmt.Sprintf("agent-phone-xcodebuild-%d.lock", os.Getuid())), os.O_CREATE|os.O_RDWR, 0600)
++	if err != nil {
+ 		return nil, err
+ 	}
+-	logPath := filepath.Join(dir, "agent-phone-build.log")
+-	log, err := os.Create(logPath)
++	for {
++		if err = ctx.Err(); err != nil {
++			lock.Close()
++			return nil, err
++		}
++		err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
++		if err == nil {
++			return lock, nil
++		}
++		if err != syscall.EWOULDBLOCK && err != syscall.EAGAIN {
++			lock.Close()
++			return nil, err
++		}
++		select {
++		case <-ctx.Done():
++			lock.Close()
++			return nil, ctx.Err()
++		case <-time.After(50 * time.Millisecond):
++		}
++	}
++}
++func (s *Service) build(ctx context.Context, a Params) (any, error) {
++	a, err := s.normalizeBuild(a)
++	if err != nil {
++		return nil, err
++	}
++	lock, err := acquireBuildLock(ctx)
+ 	if err != nil {
+ 		return nil, err
+ 	}
++	defer lock.Close()
++	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
++	started := time.Now()
++	artifactDir := filepath.Join(s.data, "build-artifacts", randomID())
++	if err = mkdir(artifactDir); err != nil {
++		return nil, err
++	}
++	logPath := filepath.Join(artifactDir, "build.log")
++	result := BuildResult{Project: a.Project, Scheme: a.Scheme, Configuration: a.Configuration, Log: logPath, Apps: []AppBuild{}}
++	log, err := os.Create(logPath)
++	if err != nil {
++		return result, err
++	}
+ 	defer log.Close()
++	if err = mkdir(a.DerivedData); err != nil {
++		return result, err
++	}
++	kind := "-project"
++	if filepath.Ext(a.Project) == ".xcworkspace" {
++		kind = "-workspace"
++	}
+ 	// Simulator ad-hoc signing preserves app-group entitlements without an
+ 	// Apple Developer account. Unsigned bundles can build but crash at startup.
+-	args := []string{kind, project, "-scheme", a.Scheme, "-configuration", a.Configuration, "-sdk", "iphonesimulator", "-destination", "generic/platform=iOS Simulator", "-derivedDataPath", dir, "-jobs", "2", "ARCHS=arm64", "ONLY_ACTIVE_ARCH=YES", "CODE_SIGNING_ALLOWED=YES", "CODE_SIGN_IDENTITY=-", "CODE_SIGNING_REQUIRED=NO"}
++	args := []string{kind, a.Project, "-scheme", a.Scheme, "-configuration", a.Configuration, "-sdk", "iphonesimulator", "-destination", "generic/platform=iOS Simulator", "-derivedDataPath", a.DerivedData, "-jobs", "2", "ARCHS=arm64", "ONLY_ACTIVE_ARCH=YES", "CODE_SIGNING_ALLOWED=YES", "CODE_SIGN_IDENTITY=-", "CODE_SIGNING_REQUIRED=NO"}
+ 	keys := make([]string, 0, len(a.BuildSettings))
+ 	for key := range a.BuildSettings {
+ 		keys = append(keys, key)
+ 	}
+ 	sort.Strings(keys)
+ 	for _, key := range keys {
+-		if key == "" || strings.ContainsAny(key, "= \t\n-") || strings.HasPrefix(key, "CODE_SIGN") || key == "SDKROOT" || key == "ARCHS" {
+-			return nil, fmt.Errorf("unsupported build setting %q", key)
+-		}
+ 		args = append(args, key+"="+a.BuildSettings[key])
+ 	}
+ 	args = append(args, "build")
+ 	command := exec.CommandContext(ctx, "/usr/bin/xcodebuild", args...)
+-	command.Dir = filepath.Dir(project)
++	command.Dir = filepath.Dir(a.Project)
+ 	command.Stdout = log
+ 	command.Stderr = log
+-	s.event("", "build_start", map[string]any{"project": project, "scheme": a.Scheme, "log": logPath})
+-	if err = command.Run(); err != nil {
+-		return nil, fmt.Errorf("Xcode build failed: %w; log: %s", err, logPath)
++	s.event("", "build_start", map[string]any{"project": a.Project, "scheme": a.Scheme, "log": logPath})
++	if s.buildCommand != nil {
++		err = s.buildCommand(command)
++	} else {
++		err = command.Run()
+ 	}
+-	result := BuildResult{Project: project, Scheme: a.Scheme, Configuration: a.Configuration, Log: logPath, Apps: []AppBuild{}, ElapsedMS: time.Since(started).Milliseconds()}
+-	if rev, err := run(ctx, "/usr/bin/git", "-C", filepath.Dir(project), "rev-parse", "HEAD"); err == nil {
++	result.ElapsedMS = time.Since(started).Milliseconds()
++	if err != nil {
++		return result, fmt.Errorf("Xcode build failed: %w; log: %s", err, logPath)
++	}
++	if err = log.Close(); err != nil {
++		return result, err
++	}
++	if rev, err := s.command(ctx, "/usr/bin/git", "-C", filepath.Dir(a.Project), "rev-parse", "HEAD"); err == nil {
+ 		result.Revision = strings.TrimSpace(string(rev))
+ 	}
+-	apps, _ := filepath.Glob(filepath.Join(dir, "Build", "Products", a.Configuration+"-iphonesimulator", "*.app"))
+-	for _, app := range apps {
+-		bundle, err := run(ctx, "/usr/bin/plutil", "-extract", "CFBundleIdentifier", "raw", "-o", "-", filepath.Join(app, "Info.plist"))
+-		if err == nil {
+-			result.Apps = append(result.Apps, AppBuild{app, strings.TrimSpace(string(bundle))})
++	products := filepath.Join(a.DerivedData, "Build", "Products", a.Configuration+"-iphonesimulator")
++	entries, err := os.ReadDir(products)
++	if err != nil {
++		return result, err
++	}
++	for _, entry := range entries {
++		if !entry.IsDir() || filepath.Ext(entry.Name()) != ".app" {
++			continue
++		}
++		app := filepath.Join(products, entry.Name())
++		bundle, err := s.command(ctx, "/usr/bin/plutil", "-extract", "CFBundleIdentifier", "raw", "-o", "-", filepath.Join(app, "Info.plist"))
++		if err != nil {
++			continue
+ 		}
++		snapshot := filepath.Join(artifactDir, filepath.Base(app))
++		if _, err = run(ctx, "/bin/cp", "-cR", app, snapshot); err != nil {
++			if err = ctx.Err(); err != nil {
++				return result, err
++			}
++			if err = os.RemoveAll(snapshot); err != nil {
++				return result, err
++			}
++			if _, err = run(ctx, "/bin/cp", "-R", app, snapshot); err != nil {
++				return result, fmt.Errorf("snapshot app: %w", err)
++			}
++		}
++		result.Apps = append(result.Apps, AppBuild{snapshot, strings.TrimSpace(string(bundle))})
+ 	}
+ 	if len(result.Apps) == 0 {
+-		return nil, fmt.Errorf("build succeeded but no simulator app bundle found; inspect %s", logPath)
++		return result, fmt.Errorf("build succeeded but no simulator app bundle found; inspect %s", logPath)
++	}
++	result.ElapsedMS = time.Since(started).Milliseconds()
++	if err = atomicJSON(filepath.Join(artifactDir, "build.json"), result); err != nil {
++		return result, err
+ 	}
+-	_ = atomicJSON(filepath.Join(dir, "agent-phone-build.json"), result)
+ 	s.event("", "build_complete", result)
+ 	return result, nil
+ }
+diff --git a/internal/phone/matrix.go b/internal/phone/matrix.go
+index 164ba9c..b861a9b 100644
+--- a/internal/phone/matrix.go
++++ b/internal/phone/matrix.go
+@@ -45,6 +45,123 @@ type VariantResult struct {
+ 	ElapsedMS   int64        `json:"elapsedMs"`
+ }
+ 
++type MatrixCounts struct {
++	Passed   int `json:"passed"`
++	Observed int `json:"observed"`
++	Failed   int `json:"failed"`
++	Skipped  int `json:"skipped"`
++}
++type MatrixReport struct {
++	ID          string          `json:"id"`
++	Name        string          `json:"name"`
++	Status      string          `json:"status"`
++	Counts      MatrixCounts    `json:"counts"`
++	CompletedAt time.Time       `json:"completedAt"`
++	Results     []VariantResult `json:"results"`
++	Report      string          `json:"report"`
++}
++type matrixTarget struct{ Name, Runtime, DeviceType string }
++
++func (s *Service) matchingMatrixTarget(ctx context.Context, target matrixTarget) (string, error) {
++	s.mu.Lock()
++	var matches []string
++	for _, p := range s.phones {
++		if p.Name == target.Name {
++			matches = append(matches, p.UDID)
++		}
++	}
++	s.mu.Unlock()
++	if len(matches) == 0 {
++		return "", nil
++	}
++	if len(matches) != 1 {
++		return "", fail("matrix_target", "matrix target has multiple registered devices: "+target.Name)
++	}
++	raw, err := s.command(ctx, "/usr/bin/xcrun", "simctl", "list", "devices", "--json")
++	if err != nil {
++		return "", fmt.Errorf("matrix target catalog: %w", err)
++	}
++	var catalog struct {
++		Devices map[string][]struct {
++			UDID       string `json:"udid"`
++			Name       string `json:"name"`
++			DeviceType string `json:"deviceTypeIdentifier"`
++			Available  bool   `json:"isAvailable"`
++		} `json:"devices"`
++	}
++	if err = json.Unmarshal(raw, &catalog); err != nil {
++		return "", fmt.Errorf("matrix target catalog: %w", err)
++	}
++	found := 0
++	for runtime, devices := range catalog.Devices {
++		for _, device := range devices {
++			if device.UDID != matches[0] {
++				continue
++			}
++			found++
++			if !device.Available || device.Name != "agent-phone · "+target.Name || runtime != target.Runtime || device.DeviceType != target.DeviceType {
++				return "", fail("matrix_target", "matrix target is unavailable or its live name, runtime, or device type differs: "+target.Name)
++			}
++		}
++	}
++	if found != 1 {
++		return "", fail("matrix_target", "matrix target is missing or ambiguous in the live catalog: "+target.Name)
++	}
++	return matches[0], nil
++}
++func (s *Service) reserveMatrixTarget(ctx context.Context, target matrixTarget, owner string) (Params, error) {
++	s.matrixMu.Lock()
++	defer s.matrixMu.Unlock()
++	id, err := s.matchingMatrixTarget(ctx, target)
++	if err != nil {
++		return Params{}, err
++	}
++	if id == "" {
++		value, err := s.create(ctx, Params{Name: target.Name, Runtime: target.Runtime, DeviceType: target.DeviceType})
++		if err != nil {
++			return Params{}, err
++		}
++		id = value.(*Phone).UDID
++		if _, err = s.matchingMatrixTarget(ctx, target); err != nil {
++			return Params{}, err
++		}
++	}
++	value, err := s.Call(ctx, Request{"acquire", Params{Device: id, Owner: owner}})
++	if err != nil {
++		return Params{}, err
++	}
++	return Params{Device: id, Lease: value.(*Lease).Token}, nil
++}
++func (s *Service) finishMatrix(report MatrixReport) (any, error) {
++	report.CompletedAt = time.Now()
++	report.Status = "passed"
++	for _, r := range report.Results {
++		switch r.Status {
++		case "passed":
++			report.Counts.Passed++
++		case "observed":
++			report.Counts.Observed++
++		case "failed":
++			report.Counts.Failed++
++		case "skipped":
++			report.Counts.Skipped++
++		}
++	}
++	if report.Counts.Failed > 0 || report.Counts.Skipped > 0 {
++		report.Status = "failed"
++	}
++	report.Report = filepath.Join(s.data, "runs", report.ID+".json")
++	if err := mkdir(filepath.Dir(report.Report)); err != nil {
++		return report, err
++	}
++	if err := atomicJSON(report.Report, report); err != nil {
++		return report, err
++	}
++	if report.Status == "failed" {
++		return report, fail("matrix_failed", fmt.Sprintf("matrix failed: %d failed, %d skipped; report: %s", report.Counts.Failed, report.Counts.Skipped, report.Report))
++	}
++	return report, nil
++}
+ func (s *Service) matrix(ctx context.Context, path string) (any, error) {
+ 	raw, err := os.ReadFile(path)
+ 	if err != nil {
+@@ -70,65 +187,103 @@ func (s *Service) matrix(ctx context.Context, path string) (any, error) {
+ 	if m.Concurrency < 1 || m.Concurrency > 4 {
+ 		return nil, fmt.Errorf("concurrency must be 1–4")
+ 	}
+-	dir := filepath.Dir(path)
+-	normalize := func(a *Params) {
+-		if !filepath.IsAbs(a.Project) {
+-			a.Project = filepath.Join(dir, a.Project)
+-		}
+-		if a.DerivedData != "" && !filepath.IsAbs(a.DerivedData) {
+-			a.DerivedData = filepath.Join(dir, a.DerivedData)
+-		}
++	report := MatrixReport{ID: randomID(), Name: m.Name, Results: make([]VariantResult, len(m.Variants))}
++	for i, v := range m.Variants {
++		report.Results[i] = VariantResult{Name: v.Name, Status: "skipped", Error: "matrix preflight failed"}
+ 	}
+-	normalize(&m.Build)
+-	builds := make([]BuildResult, len(m.Variants))
+-	cache := map[string]BuildResult{}
++	specs := make([]Params, len(m.Variants))
++	preflightFailed := false
+ 	for i, v := range m.Variants {
+ 		a := m.Build
+ 		if v.Build != nil {
+ 			a = *v.Build
+-			normalize(&a)
+ 		}
+-		key := buildKey(a)
+-		if b, ok := cache[key]; ok {
+-			builds[i] = b
+-			continue
++		if a.Project != "" && !filepath.IsAbs(a.Project) {
++			a.Project = filepath.Join(filepath.Dir(path), a.Project)
++		}
++		if a.DerivedData != "" && !filepath.IsAbs(a.DerivedData) {
++			a.DerivedData = filepath.Join(filepath.Dir(path), a.DerivedData)
++		}
++		specs[i], err = s.normalizeBuild(a)
++		if err != nil {
++			report.Results[i].Status = "failed"
++			report.Results[i].Error = err.Error()
++			preflightFailed = true
++		}
++	}
++	if preflightFailed {
++		return s.finishMatrix(report)
++	}
++	if err = validateBuildClaims(specs); err != nil {
++		report.Results[0].Status = "failed"
++		report.Results[0].Error = err.Error()
++		return s.finishMatrix(report)
++	}
++	s.matrixMu.Lock()
++	for i, v := range m.Variants {
++		target := matrixTarget{m.Name + " / " + v.Name, m.Runtime, m.DeviceType}
++		if len(target.Name) > 80 || m.Runtime == "" || m.DeviceType == "" {
++			err = fmt.Errorf("matrix target name must fit 80 characters; runtime and deviceType are required")
++		} else {
++			_, err = s.matchingMatrixTarget(ctx, target)
+ 		}
+-		value, err := s.build(ctx, a)
+ 		if err != nil {
+-			return nil, err
++			report.Results[i].Status = "failed"
++			report.Results[i].Error = err.Error()
++			preflightFailed = true
+ 		}
+-		b := value.(BuildResult)
+-		cache[key] = b
+-		builds[i] = b
+ 	}
+-	results := make([]VariantResult, len(m.Variants))
++	s.matrixMu.Unlock()
++	if preflightFailed {
++		return s.finishMatrix(report)
++	}
++	type buildOutcome struct {
++		result BuildResult
++		err    error
++	}
++	cache := map[string]buildOutcome{}
++	builds := make([]BuildResult, len(m.Variants))
++	var runnable []int
++	for i, a := range specs {
++		key := buildKey(a)
++		outcome, cached := cache[key]
++		if !cached {
++			value, err := s.build(ctx, a)
++			outcome.err = err
++			if value != nil {
++				outcome.result = value.(BuildResult)
++			}
++			cache[key] = outcome
++		}
++		builds[i] = outcome.result
++		if outcome.err != nil {
++			report.Results[i].Status = "failed"
++			if cached {
++				report.Results[i].Status = "skipped"
++			}
++			report.Results[i].Error = outcome.err.Error()
++			report.Results[i].Build = &builds[i]
++			continue
++		}
++		runnable = append(runnable, i)
++	}
+ 	jobs := make(chan int)
+ 	var wg sync.WaitGroup
+-	runID := randomID()
+ 	for range m.Concurrency {
+ 		wg.Add(1)
+ 		go func() {
+ 			defer wg.Done()
+ 			for i := range jobs {
+-				results[i] = s.runVariant(ctx, runID, m, m.Variants[i], builds[i])
++				report.Results[i] = s.runVariant(ctx, report.ID, m, m.Variants[i], builds[i])
+ 			}
+ 		}()
+ 	}
+-	for i := range m.Variants {
++	for _, i := range runnable {
+ 		jobs <- i
+ 	}
+ 	close(jobs)
+ 	wg.Wait()
+-	report := map[string]any{"id": runID, "name": m.Name, "completedAt": time.Now(), "results": results}
+-	reportPath := filepath.Join(s.data, "runs", runID+".json")
+-	if err = mkdir(filepath.Dir(reportPath)); err != nil {
+-		return nil, err
+-	}
+-	report["report"] = reportPath
+-	if err = atomicJSON(reportPath, report); err != nil {
+-		return nil, err
+-	}
+-	return report, nil
++	return s.finishMatrix(report)
+ }
+ func (s *Service) runVariant(ctx context.Context, runID string, m Matrix, v Variant, b BuildResult) (r VariantResult) {
+ 	start := time.Now()
+@@ -138,28 +293,12 @@ func (s *Service) runVariant(ctx context.Context, runID string, m Matrix, v Vari
+ 	if len(b.Apps) != 1 {
+ 		return bad(fmt.Errorf("demo matrix requires exactly one app product, got %d", len(b.Apps)))
+ 	}
+-	// Reuse only agent-phone's explicitly registered matching device.
+-	name := m.Name + " / " + v.Name
+-	s.mu.Lock()
+-	for _, p := range s.phones {
+-		if p.Name == name {
+-			r.Device = p.UDID
+-			break
+-		}
+-	}
+-	s.mu.Unlock()
+-	if r.Device == "" {
+-		value, err := s.create(ctx, Params{Name: name, DeviceType: m.DeviceType, Runtime: m.Runtime})
+-		if err != nil {
+-			return bad(err)
+-		}
+-		r.Device = value.(*Phone).UDID
+-	}
+-	value, err := s.Call(ctx, Request{"acquire", Params{Device: r.Device, Owner: "matrix:" + runID + ":" + v.Name}})
++	a, err := s.reserveMatrixTarget(ctx, matrixTarget{m.Name + " / " + v.Name, m.Runtime, m.DeviceType}, "matrix:"+runID+":"+v.Name)
+ 	if err != nil {
+ 		return bad(err)
+ 	}
+-	a := Params{Device: r.Device, Lease: value.(*Lease).Token}
++	r.Device = a.Device
++	var value any
+ 	defer func() {
+ 		cleanup, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+ 		defer cancel()
+diff --git a/internal/phone/matrix_regression_test.go b/internal/phone/matrix_regression_test.go
+new file mode 100644
+index 0000000..d2b08b9
+--- /dev/null
++++ b/internal/phone/matrix_regression_test.go
+@@ -0,0 +1,362 @@
++package phone
++
++import (
++	"context"
++	"encoding/json"
++	"errors"
++	"fmt"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"strings"
++	"sync"
++	"sync/atomic"
++	"testing"
++	"time"
++)
++
++func fixtureService(t *testing.T) *Service {
++	t.Helper()
++	s := &Service{data: t.TempDir(), phones: map[string]*Phone{}}
++	s.runCommand = func(_ context.Context, program string, args ...string) ([]byte, error) {
++		if program == "/usr/bin/git" {
++			return []byte("fixture-revision"), nil
++		}
++		if program == "/usr/bin/plutil" {
++			return []byte("org.example.fixture"), nil
++		}
++		return nil, fmt.Errorf("unexpected external command: %s %v", program, args)
++	}
++	s.buildCommand = func(*exec.Cmd) error { return errors.New("fixture build failure") }
++	return s
++}
++func fixtureProject(t *testing.T) string {
++	t.Helper()
++	p := filepath.Join(t.TempDir(), "App.xcodeproj")
++	if err := os.Mkdir(p, 0700); err != nil {
++		t.Fatal(err)
++	}
++	return p
++}
++func fixtureManifest(t *testing.T, m Matrix) string {
++	t.Helper()
++	p := filepath.Join(t.TempDir(), "matrix.json")
++	if err := atomicJSON(p, m); err != nil {
++		t.Fatal(err)
++	}
++	return p
++}
++func reportJSON(t *testing.T, value any) map[string]any {
++	t.Helper()
++	b, err := json.Marshal(value)
++	if err != nil {
++		t.Fatal(err)
++	}
++	var report map[string]any
++	if err = json.Unmarshal(b, &report); err != nil {
++		t.Fatal(err)
++	}
++	return report
++}
++func TestMatrixRejectsIncompatibleManagedTarget(t *testing.T) {
++	for _, reason := range []string{"runtime", "type", "missing", "duplicate", "renamed"} {
++		t.Run(reason, func(t *testing.T) {
++			s := fixtureService(t)
++			m := Matrix{Name: "test", Runtime: "runtime-A", DeviceType: "type-A"}
++			p := &Phone{UDID: "managed", Name: "test / one", lease: &Lease{Owner: "sentinel", Expires: time.Now().Add(time.Hour)}}
++			s.phones[p.UDID] = p
++			runtime, typ, name := "runtime-A", "type-A", "agent-phone · test / one"
++			if reason == "runtime" {
++				runtime = "runtime-B"
++			}
++			if reason == "type" {
++				typ = "type-B"
++			}
++			if reason == "renamed" {
++				name = "someone else's phone"
++			}
++			devices := []map[string]any{{"udid": p.UDID, "name": name, "deviceTypeIdentifier": typ, "isAvailable": true}}
++			if reason == "missing" {
++				devices = nil
++			}
++			if reason == "duplicate" {
++				s.phones["second"] = &Phone{UDID: "second", Name: p.Name, lease: p.lease}
++			}
++			s.runCommand = func(_ context.Context, program string, args ...string) ([]byte, error) {
++				if program != "/usr/bin/xcrun" || strings.Join(args, " ") != "simctl list devices --json" {
++					t.Errorf("unexpected mutation: %s %v", program, args)
++					return nil, errors.New("mutation forbidden")
++				}
++				return json.Marshal(map[string]any{"devices": map[string]any{runtime: devices}})
++			}
++			r := s.runVariant(context.Background(), "run", m, Variant{Name: "one"}, BuildResult{Apps: []AppBuild{{Path: "/fixture.app"}}})
++			if r.Status != "failed" || !strings.Contains(r.Error, "matrix target") {
++				t.Fatalf("expected matrix target identity rejection, got %+v", r)
++			}
++		})
++	}
++}
++func TestResultRetainsFailedMatrixReport(t *testing.T) {
++	value := map[string]any{"report": "/run.json", "results": []string{"failed"}}
++	r := Result(value, fail("matrix_failed", "one variant failed"))
++	if r.OK || r.Error == nil || r.Result == nil {
++		t.Fatalf("partial report lost: %+v", r)
++	}
++}
++func TestMatrixBuildFailureRetainsEveryRow(t *testing.T) {
++	s := fixtureService(t)
++	m := Matrix{Name: "test", Runtime: "runtime-A", DeviceType: "type-A", Build: Params{Project: fixtureProject(t), Scheme: "App"}, Variants: []Variant{{Name: "one"}, {Name: "two"}}}
++	value, err := s.matrix(context.Background(), fixtureManifest(t, m))
++	var api *APIError
++	if !errors.As(err, &api) || api.Code != "matrix_failed" {
++		t.Errorf("expected matrix_failed, got %v", err)
++	}
++	report := reportJSON(t, value)
++	rows, _ := report["results"].([]any)
++	if len(rows) != 2 {
++		t.Fatalf("failed build lost rows: %#v", report)
++	}
++	if rows[0].(map[string]any)["status"] != "failed" || rows[1].(map[string]any)["status"] != "skipped" {
++		t.Fatalf("wrong dependency outcomes: %#v", rows)
++	}
++	for _, row := range rows {
++		build, ok := row.(map[string]any)["build"].(map[string]any)
++		if !ok {
++			t.Fatal("missing build failure evidence")
++		}
++		if _, err := os.Stat(build["log"].(string)); err != nil {
++			t.Fatal(err)
++		}
++	}
++	if report["status"] != "failed" {
++		t.Errorf("missing failed aggregate: %#v", report)
++	}
++	path, _ := report["report"].(string)
++	if _, err := os.Stat(path); err != nil {
++		t.Errorf("missing persisted report: %v", err)
++	}
++}
++func TestMatrixRejectsAliasedAndNestedOutputClaimsBeforeBuild(t *testing.T) {
++	for _, nested := range []bool{false, true} {
++		t.Run(fmt.Sprint(nested), func(t *testing.T) {
++			s := fixtureService(t)
++			base := t.TempDir()
++			alias := filepath.Join(t.TempDir(), "alias")
++			if err := os.Symlink(base, alias); err != nil {
++				t.Fatal(err)
++			}
++			first := Params{Project: fixtureProject(t), Scheme: "App", DerivedData: filepath.Join(base, "output")}
++			second := first
++			second.BuildSettings = map[string]string{"FEATURE": "B"}
++			second.DerivedData = filepath.Join(alias, "output")
++			if nested {
++				second.DerivedData = filepath.Join(second.DerivedData, "nested")
++			}
++			calls := 0
++			s.buildCommand = func(*exec.Cmd) error { calls++; return errors.New("build should not run") }
++			_, err := s.matrix(context.Background(), fixtureManifest(t, Matrix{Name: "test", Build: first, Variants: []Variant{{Name: "one"}, {Name: "two", Build: &second}}}))
++			if err == nil || calls != 0 {
++				t.Fatalf("conflicting claims reached build: calls=%d err=%v", calls, err)
++			}
++		})
++	}
++}
++func TestBuildProductsSurviveLaterBuild(t *testing.T) {
++	s := fixtureService(t)
++	a := Params{Project: fixtureProject(t), Scheme: "App", DerivedData: filepath.Join(t.TempDir(), "output")}
++	marker := "A"
++	s.buildCommand = func(cmd *exec.Cmd) error {
++		dir := ""
++		configuration := ""
++		for i, arg := range cmd.Args {
++			if arg == "-derivedDataPath" {
++				dir = cmd.Args[i+1]
++			}
++			if arg == "-configuration" {
++				configuration = cmd.Args[i+1]
++			}
++		}
++		app := filepath.Join(dir, "Build", "Products", configuration+"-iphonesimulator", "App.app")
++		if err := os.MkdirAll(app, 0700); err != nil {
++			return err
++		}
++		if _, err := fmt.Fprintln(cmd.Stdout, "build "+marker); err != nil {
++			return err
++		}
++		return os.WriteFile(filepath.Join(app, "marker"), []byte(marker), 0600)
++	}
++	first, err := s.build(context.Background(), a)
++	if err != nil {
++		t.Fatal(err)
++	}
++	marker = "B"
++	a.BuildSettings = map[string]string{"FEATURE": "B"}
++	second, err := s.build(context.Background(), a)
++	if err != nil {
++		t.Fatal(err)
++	}
++	for i, item := range []any{first, second} {
++		b := item.(BuildResult)
++		got, err := os.ReadFile(filepath.Join(b.Apps[0].Path, "marker"))
++		want := []string{"A", "B"}[i]
++		if err != nil || string(got) != want {
++			t.Errorf("build %s changed: marker=%q err=%v", want, got, err)
++		}
++		log, err := os.ReadFile(b.Log)
++		if err != nil || !strings.Contains(string(log), "build "+want) {
++			t.Errorf("build %s log changed: %q %v", want, log, err)
++		}
++	}
++}
++
++func TestConcurrentMatrixReservationsCreateOnlyOneManagedPhone(t *testing.T) {
++	s := fixtureService(t)
++	var creates atomic.Int32
++	s.runCommand = func(_ context.Context, program string, args ...string) ([]byte, error) {
++		if program != "/usr/bin/xcrun" {
++			return nil, fmt.Errorf("unexpected command %s", program)
++		}
++		switch strings.Join(args[:2], " ") {
++		case "simctl create":
++			creates.Add(1)
++			return []byte("managed"), nil
++		case "simctl list":
++			return []byte(`{"devices":{"runtime-A":[{"udid":"managed","name":"agent-phone · test / one","deviceTypeIdentifier":"type-A","isAvailable":true}]}}`), nil
++		default:
++			return nil, fmt.Errorf("unexpected command %v", args)
++		}
++	}
++	start := make(chan struct{})
++	var wg sync.WaitGroup
++	results := make(chan error, 2)
++	for i := 0; i < 2; i++ {
++		wg.Add(1)
++		go func() {
++			defer wg.Done()
++			<-start
++			a, err := s.reserveMatrixTarget(context.Background(), matrixTarget{"test / one", "runtime-A", "type-A"}, "fixture")
++			if err == nil && a.Device != "managed" {
++				err = fmt.Errorf("wrong reserved target %q", a.Device)
++			}
++			results <- err
++		}()
++	}
++	close(start)
++	wg.Wait()
++	close(results)
++	success, busy := 0, 0
++	for err := range results {
++		if err == nil {
++			success++
++			continue
++		}
++		var api *APIError
++		if errors.As(err, &api) && api.Code == "device_busy" {
++			busy++
++		} else {
++			t.Errorf("unexpected reservation error: %v", err)
++		}
++	}
++	if creates.Load() != 1 || success != 1 || busy != 1 {
++		t.Fatalf("creates=%d success=%d busy=%d", creates.Load(), success, busy)
++	}
++}
++func TestBuildCanonicalSpecsAndOutputSettings(t *testing.T) {
++	s := fixtureService(t)
++	project := fixtureProject(t)
++	alias := filepath.Join(t.TempDir(), "alias")
++	if err := os.Symlink(filepath.Dir(project), alias); err != nil {
++		t.Fatal(err)
++	}
++	a, err := s.normalizeBuild(Params{Project: project, Scheme: "App"})
++	if err != nil {
++		t.Fatal(err)
++	}
++	b, err := s.normalizeBuild(Params{Project: filepath.Join(alias, filepath.Base(project)), Scheme: "App", Configuration: "Debug", BuildSettings: map[string]string{}})
++	if err != nil {
++		t.Fatal(err)
++	}
++	if buildKey(a) != buildKey(b) || a.DerivedData != b.DerivedData {
++		t.Fatalf("equivalent build specs diverged: %+v %+v", a, b)
++	}
++	for _, key := range []string{"SYMROOT", "CONFIGURATION_BUILD_DIR", "OBJROOT", "BUILD_DIR", "TARGET_BUILD_DIR", "WRAPPER_NAME"} {
++		a.BuildSettings = map[string]string{key: "/elsewhere"}
++		if _, err := s.build(context.Background(), a); err == nil {
++			t.Fatalf("accepted output redirect %s", key)
++		}
++	}
++}
++func TestHostBuildLockSerializesServiceHomesAndCancelsWait(t *testing.T) {
++	first, second := fixtureService(t), fixtureService(t)
++	a := Params{Project: fixtureProject(t), Scheme: "App"}
++	entered := make(chan struct{})
++	release := make(chan struct{})
++	first.buildCommand = func(*exec.Cmd) error { close(entered); <-release; return errors.New("first fixture finished") }
++	var secondCalls atomic.Int32
++	second.buildCommand = func(*exec.Cmd) error { secondCalls.Add(1); return errors.New("second fixture finished") }
++	done := make(chan error, 1)
++	go func() { _, err := first.build(context.Background(), a); done <- err }()
++	select {
++	case <-entered:
++	case <-time.After(3 * time.Second):
++		t.Fatal("first build never entered")
++	}
++	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
++	defer cancel()
++	_, err := second.build(ctx, a)
++	close(release)
++	<-done
++	if !errors.Is(err, context.DeadlineExceeded) || secondCalls.Load() != 0 {
++		t.Fatalf("host lock did not cancel waiting build: calls=%d err=%v", secondCalls.Load(), err)
++	}
++	_, err = second.build(context.Background(), a)
++	if err == nil || secondCalls.Load() != 1 {
++		t.Fatalf("host lock did not release: calls=%d err=%v", secondCalls.Load(), err)
++	}
++}
++func TestMatrixMixedOutcomesPreserveCleanupFailure(t *testing.T) {
++	s := fixtureService(t)
++	report := MatrixReport{ID: "fixture", Name: "test", Results: []VariantResult{{Name: "passed", Status: "passed", Observation: &Observation{ID: "evidence"}}, {Name: "observed", Status: "observed"}, {Name: "cleanup", Status: "failed", Error: "cleanup shutdown: fixture failure"}, {Name: "dependency", Status: "skipped", Error: "build failed"}}}
++	value, err := s.finishMatrix(report)
++	var api *APIError
++	if !errors.As(err, &api) || api.Code != "matrix_failed" {
++		t.Fatalf("mixed matrix returned success: %v", err)
++	}
++	got := value.(MatrixReport)
++	if got.Counts != (MatrixCounts{Passed: 1, Observed: 1, Failed: 1, Skipped: 1}) {
++		t.Fatalf("counts=%+v", got.Counts)
++	}
++	raw, err := os.ReadFile(got.Report)
++	if err != nil {
++		t.Fatal(err)
++	}
++	var saved MatrixReport
++	if err = json.Unmarshal(raw, &saved); err != nil {
++		t.Fatal(err)
++	}
++	if len(saved.Results) != 4 || saved.Results[0].Observation.ID != "evidence" || saved.Results[2].Error != report.Results[2].Error {
++		t.Fatalf("partial evidence lost: %+v", saved)
++	}
++}
++
++func TestMatrixTargetPreflightStopsBeforeBuild(t *testing.T) {
++	s := fixtureService(t)
++	s.phones["managed"] = &Phone{UDID: "managed", Name: "test / one"}
++	s.runCommand = func(_ context.Context, program string, args ...string) ([]byte, error) {
++		if program != "/usr/bin/xcrun" || strings.Join(args, " ") != "simctl list devices --json" {
++			return nil, fmt.Errorf("unexpected command %s %v", program, args)
++		}
++		return []byte(`{"devices":{"runtime-B":[{"udid":"managed","name":"agent-phone · test / one","deviceTypeIdentifier":"type-A","isAvailable":true}]}}`), nil
++	}
++	calls := 0
++	s.buildCommand = func(*exec.Cmd) error { calls++; return errors.New("unexpected build") }
++	m := Matrix{Name: "test", Runtime: "runtime-A", DeviceType: "type-A", Build: Params{Project: fixtureProject(t), Scheme: "App"}, Variants: []Variant{{Name: "one"}, {Name: "two"}}}
++	value, err := s.matrix(context.Background(), fixtureManifest(t, m))
++	if err == nil || calls != 0 {
++		t.Fatalf("incompatible target reached build: calls=%d err=%v", calls, err)
++	}
++	report := value.(MatrixReport)
++	if report.Results[0].Status != "failed" || report.Results[1].Status != "skipped" {
++		t.Fatalf("preflight rows=%+v", report.Results)
++	}
++}
+diff --git a/internal/phone/service.go b/internal/phone/service.go
+index 6920810..65b0437 100644
+--- a/internal/phone/service.go
++++ b/internal/phone/service.go
+@@ -70,7 +70,7 @@ func Result(value any, err error) Response {
+ 	if !errors.As(err, &api) {
+ 		api = &APIError{"operation_failed", err.Error()}
+ 	}
+-	return Response{Error: api}
++	return Response{Result: value, Error: api}
+ }
+ 
+ type Lease struct {
+@@ -101,7 +101,9 @@ type Service struct {
+ 	mu           sync.Mutex
+ 	phones       map[string]*Phone
+ 	bootMu       sync.Mutex
+-	buildMu      sync.Mutex
++	matrixMu     sync.Mutex
++	runCommand   func(context.Context, string, ...string) ([]byte, error)
++	buildCommand func(*exec.Cmd) error
+ 	eventMu      sync.Mutex
+ 	memoryMu     sync.Mutex
+ 	memoryAt     time.Time
+@@ -130,6 +132,12 @@ func run(ctx context.Context, program string, args ...string) ([]byte, error) {
+ 	}
+ 	return out, nil
+ }
++func (s *Service) command(ctx context.Context, program string, args ...string) ([]byte, error) {
++	if s.runCommand != nil {
++		return s.runCommand(ctx, program, args...)
++	}
++	return run(ctx, program, args...)
++}
+ func atomicJSON(path string, value any) error {
+ 	data, err := json.MarshalIndent(value, "", "  ")
+ 	if err != nil {
+@@ -341,7 +349,7 @@ func (s *Service) create(ctx context.Context, a Params) (any, error) {
+ 	if strings.TrimSpace(a.Name) == "" || len(a.Name) > 80 || a.DeviceType == "" || a.Runtime == "" {
+ 		return nil, fmt.Errorf("name, deviceType and runtime are required (use catalog)")
+ 	}
+-	out, err := run(ctx, "/usr/bin/xcrun", "simctl", "create", "agent-phone · "+a.Name, a.DeviceType, a.Runtime)
++	out, err := s.command(ctx, "/usr/bin/xcrun", "simctl", "create", "agent-phone · "+a.Name, a.DeviceType, a.Runtime)
+ 	if err != nil {
+ 		return nil, err
+ 	}

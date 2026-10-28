@@ -1,0 +1,256 @@
+diff --git a/internal/phone/build.go b/internal/phone/build.go
+index 93fd756..727d13c 100644
+--- a/internal/phone/build.go
++++ b/internal/phone/build.go
+@@ -48,8 +48,21 @@ func canonicalPath(path string) (string, error) {
+ 	for {
+ 		resolved, err := filepath.EvalSymlinks(ancestor)
+ 		if err == nil {
++			resolved, sensitive, err := canonicalExistingPath(resolved)
++			if err != nil {
++				return "", err
++			}
+ 			for i := len(missing) - 1; i >= 0; i-- {
+-				resolved = filepath.Join(resolved, missing[i])
++				component := missing[i]
++				if !sensitive {
++					for _, r := range component {
++						if r > 127 {
++							return "", fmt.Errorf("create non-ASCII output directory before use on a case-insensitive volume: %q", absolute)
++						}
++					}
++					component = strings.ToLower(component)
++				}
++				resolved = filepath.Join(resolved, component)
+ 			}
+ 			return resolved, nil
+ 		}
+diff --git a/internal/phone/build_case_test.go b/internal/phone/build_case_test.go
+new file mode 100644
+index 0000000..2a3e99c
+--- /dev/null
++++ b/internal/phone/build_case_test.go
+@@ -0,0 +1,169 @@
++package phone
++
++import (
++	"context"
++	"errors"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"strings"
++	"testing"
++)
++
++func caseAliasFixture(t *testing.T) (string, string) {
++	t.Helper()
++	parent := t.TempDir()
++	actual := filepath.Join(parent, "ExistingAncestor")
++	if err := os.Mkdir(actual, 0700); err != nil {
++		t.Fatal(err)
++	}
++	alias := filepath.Join(parent, "existingancestor")
++	a, err := os.Stat(actual)
++	if err != nil {
++		t.Fatal(err)
++	}
++	b, err := os.Stat(alias)
++	if os.IsNotExist(err) {
++		t.Skip("fixture volume uses case-sensitive names")
++	}
++	if err != nil {
++		t.Fatal(err)
++	}
++	if !os.SameFile(a, b) {
++		t.Fatal("fixture aliases do not identify the same directory")
++	}
++	return actual, alias
++}
++
++func TestMatrixRejectsCaseAliasedOutputClaimsBeforeBuild(t *testing.T) {
++	for _, name := range []string{"existing", "missing", "nested"} {
++		t.Run(name, func(t *testing.T) {
++			actual, alias := caseAliasFixture(t)
++			firstOutput := filepath.Join(actual, "Output")
++			secondOutput := filepath.Join(alias, "output")
++			if name == "existing" {
++				if err := os.Mkdir(firstOutput, 0700); err != nil {
++					t.Fatal(err)
++				}
++			}
++			if name == "nested" {
++				secondOutput = filepath.Join(secondOutput, "Nested")
++			}
++			s := fixtureService(t)
++			first := Params{Project: fixtureProject(t), Scheme: "App", DerivedData: firstOutput}
++			second := first
++			second.DerivedData = secondOutput
++			second.BuildSettings = map[string]string{"FEATURE": "B"}
++			calls := 0
++			s.buildCommand = func(*exec.Cmd) error { calls++; return errors.New("fixture refuses Xcode") }
++			m := Matrix{Name: "test", Runtime: "runtime-A", DeviceType: "type-A", Build: first, Variants: []Variant{{Name: "one"}, {Name: "two", Build: &second}}}
++			value, err := s.matrix(context.Background(), fixtureManifest(t, m))
++			if err == nil || calls != 0 {
++				t.Fatalf("case aliases reached build: calls=%d err=%v", calls, err)
++			}
++			report := value.(MatrixReport)
++			if !strings.Contains(report.Results[0].Error, "overlapping derivedData") {
++				t.Fatalf("expected output collision, got %+v", report.Results)
++			}
++		})
++	}
++}
++
++func TestBuildCanonicalizesCaseAliasedProjectIdentity(t *testing.T) {
++	actual, alias := caseAliasFixture(t)
++	project := filepath.Join(actual, "App.xcodeproj")
++	if err := os.Mkdir(project, 0700); err != nil {
++		t.Fatal(err)
++	}
++	s := fixtureService(t)
++	a, err := s.normalizeBuild(Params{Project: project, Scheme: "App"})
++	if err != nil {
++		t.Fatal(err)
++	}
++	b, err := s.normalizeBuild(Params{Project: filepath.Join(alias, "app.xcodeproj"), Scheme: "App"})
++	if err != nil {
++		t.Fatal(err)
++	}
++	if buildKey(a) != buildKey(b) || a.Project != b.Project || a.DerivedData != b.DerivedData {
++		t.Fatalf("same project got distinct identities: %+v %+v", a, b)
++	}
++}
++
++func TestCaseInsensitivePathsPreserveExistingUnicodeAndRejectMissingUnicode(t *testing.T) {
++	actual, _ := caseAliasFixture(t)
++	project := filepath.Join(actual, "Écran.xcodeproj")
++	output := filepath.Join(actual, "Résultats")
++	for _, path := range []string{project, output} {
++		if err := os.Mkdir(path, 0700); err != nil {
++			t.Fatal(err)
++		}
++	}
++	s := fixtureService(t)
++	a, err := s.normalizeBuild(Params{Project: project, Scheme: "App", DerivedData: output})
++	if err != nil {
++		t.Fatal(err)
++	}
++	for _, pair := range [][2]string{{project, a.Project}, {output, a.DerivedData}} {
++		first, err := os.Stat(pair[0])
++		if err != nil {
++			t.Fatal(err)
++		}
++		second, err := os.Stat(pair[1])
++		if err != nil {
++			t.Fatal(err)
++		}
++		if !os.SameFile(first, second) {
++			t.Fatalf("existing Unicode path changed: %q %q", pair[0], pair[1])
++		}
++	}
++	a.DerivedData = filepath.Join(output, "NewASCII")
++	if _, err = s.normalizeBuild(a); err != nil {
++		t.Fatalf("ASCII child of existing Unicode directory rejected: %v", err)
++	}
++	a.DerivedData = filepath.Join(actual, "Résultats-Neufs")
++	calls := 0
++	s.buildCommand = func(*exec.Cmd) error { calls++; return errors.New("fixture refuses Xcode") }
++	_, err = s.build(context.Background(), a)
++	if err == nil || !strings.Contains(err.Error(), "create non-ASCII output directory before use") || calls != 0 {
++		t.Fatalf("standalone missing Unicode output: calls=%d err=%v", calls, err)
++	}
++	m := Matrix{Name: "test", Runtime: "runtime-A", DeviceType: "type-A", Build: a, Variants: []Variant{{Name: "one"}}}
++	value, err := s.matrix(context.Background(), fixtureManifest(t, m))
++	if err == nil || calls != 0 {
++		t.Fatalf("matrix missing Unicode output: calls=%d err=%v", calls, err)
++	}
++	report := value.(MatrixReport)
++	if !strings.Contains(report.Results[0].Error, "create non-ASCII output directory before use") {
++		t.Fatalf("missing actionable path error: %+v", report.Results)
++	}
++}
++
++func TestCaseSensitiveOutputPathsRemainDistinct(t *testing.T) {
++	parent := t.TempDir()
++	upper := filepath.Join(parent, "Output")
++	lower := filepath.Join(parent, "output")
++	if err := os.Mkdir(upper, 0700); err != nil {
++		t.Fatal(err)
++	}
++	if _, err := os.Stat(lower); err == nil {
++		t.Skip("fixture volume uses case-insensitive names")
++	} else if !os.IsNotExist(err) {
++		t.Fatal(err)
++	}
++	s := fixtureService(t)
++	project := fixtureProject(t)
++	a, err := s.normalizeBuild(Params{Project: project, Scheme: "App", DerivedData: upper})
++	if err != nil {
++		t.Fatal(err)
++	}
++	b, err := s.normalizeBuild(Params{Project: project, Scheme: "App", DerivedData: lower, BuildSettings: map[string]string{"FEATURE": "B"}})
++	if err != nil {
++		t.Fatal(err)
++	}
++	if a.DerivedData == b.DerivedData {
++		t.Fatal("case-sensitive output names collapsed")
++	}
++	if err = validateBuildClaims([]Params{a, b}); err != nil {
++		t.Fatalf("distinct case-sensitive outputs conflicted: %v", err)
++	}
++}
+diff --git a/internal/phone/build_path_darwin.go b/internal/phone/build_path_darwin.go
+new file mode 100644
+index 0000000..7d3e255
+--- /dev/null
++++ b/internal/phone/build_path_darwin.go
+@@ -0,0 +1,35 @@
++package phone
++
++import (
++	"fmt"
++	"os"
++	"strings"
++	"syscall"
++	"unsafe"
++)
++
++func canonicalExistingPath(path string) (string, bool, error) {
++	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
++	if err != nil {
++		return "", false, err
++	}
++	defer file.Close()
++	var buffer [1024]byte
++	_, _, errno := syscall.Syscall(syscall.SYS_FCNTL, file.Fd(), syscall.F_GETPATH, uintptr(unsafe.Pointer(&buffer[0])))
++	if errno != 0 {
++		return "", false, errno
++	}
++	end := strings.IndexByte(string(buffer[:]), 0)
++	if end < 0 {
++		return "", false, fmt.Errorf("filesystem canonical path exceeds buffer")
++	}
++	const pcCaseSensitive = 11
++	sensitive, err := syscall.Fpathconf(int(file.Fd()), pcCaseSensitive)
++	if err != nil {
++		return "", false, err
++	}
++	if sensitive != 0 && sensitive != 1 {
++		return "", false, fmt.Errorf("filesystem case sensitivity is unknown for %q", path)
++	}
++	return string(buffer[:end]), sensitive == 1, nil
++}
+diff --git a/internal/phone/build_path_other.go b/internal/phone/build_path_other.go
+new file mode 100644
+index 0000000..00eaf4c
+--- /dev/null
++++ b/internal/phone/build_path_other.go
+@@ -0,0 +1,7 @@
++//go:build !darwin
++
++package phone
++
++func canonicalExistingPath(path string) (string, bool, error) {
++	return path, true, nil
++}

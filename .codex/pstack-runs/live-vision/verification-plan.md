@@ -1,0 +1,11 @@
+# Integrated verification plan
+
+Claim to verify: four managed phones can continuously supply compact sampled images to the dashboard and agent readers without taking control ownership or invalidating AX references. This is functional/resource validation, not a comparative benchmark or a claim of display-video frame rate.
+
+Before mutation, enumerate managed IDs and lease owners. Parent owns all live calls. Start four watch subscriptions; require exact device identity, valid JPEG dimensions, advancing sequences, and source capture timestamps. Read the same feed through one-shot CLI/MCP; verify image bytes/metadata and no extra producer. Hold an AX reference, perform frame reads, then act with the same reference to prove observation independence. Execute four independent Wikipedia searches concurrently; require each AX query/result and its actual image to match. Keep streams alive through lease release. Stale/superseded observations and competing leases must still be rejected.
+
+Exercise slow-reader latest-only behavior, cancellation, helper crash/reconnect with changed epoch, explicit leased shutdown/reboot on one phone, and last-reader teardown. Ensure service exit reaps helper processes, dashboard reconnects after restart, and no continuous image files grow in the evidence directory. Reopen final dashboard with four healthy feeds and inspect its real native UI.
+
+Run make test (Go race plus existing Python tests), then make app serially. Unit tests must cover malformed/native oversized framing, demand sharing, no Phone.mu contention, deadlines, generation isolation and limits. Live proof complements these tests; simulated source tests do not prove native capture.
+
+During a sustained four-feed sample record elapsed duration, frame counts/cadence, JPEG bytes, capture age, helper/daemon/dashboard process RSS and CPU samples, host memory pressure and swap. Report scope/duration and maximum observed values. Do not equate process RSS with total private/GPU footprint or claim before/after speedup. If resource usage is concerning, change policy and rerun that affected measurement. Keep raw reports in ignored .cache/live-vision-validation and summarize actual outcomes under docs/.

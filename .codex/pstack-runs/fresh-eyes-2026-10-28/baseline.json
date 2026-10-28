@@ -1,0 +1,49 @@
+{
+  "cli_exit": 0,
+  "fleet_ok": true,
+  "managed": [
+    {
+      "udid": "3E267D5D-ED3A-4BA2-BA7F-17C0982B329A",
+      "name": "Wikipedia / Dark",
+      "state": "Booted",
+      "owner": null,
+      "cached_observation": "2026-10-28T07:49:28.361613-07:00"
+    },
+    {
+      "udid": "1CEC04F5-2C02-42F3-A85E-A8F12E0280B6",
+      "name": "Wikipedia / Dark \u00b7 Large text",
+      "state": "Booted",
+      "owner": null,
+      "cached_observation": "2026-10-28T07:49:28.493768-07:00"
+    },
+    {
+      "udid": "E9008971-4EC6-4654-AA32-11E2AD84D7A0",
+      "name": "Wikipedia / Light",
+      "state": "Booted",
+      "owner": null,
+      "cached_observation": "2026-10-28T07:49:28.494502-07:00"
+    },
+    {
+      "udid": "3F985339-AB26-421D-80B8-43E19B1AECF6",
+      "name": "Wikipedia / Light \u00b7 Large text",
+      "state": "Booted",
+      "owner": null,
+      "cached_observation": "2026-10-28T07:49:28.108056-07:00"
+    }
+  ],
+  "fleet_output_bytes": 125046,
+  "fleet_output_lines": 4303,
+  "source_revisions": {
+    "simslim": "2c68da93700aa1a1c45ce31a7ea9f7cac2174ddc",
+    "jev-vphone-cli": "1606fbbe91e956b5c1e6fc481d5a3fcfc9f85b90"
+  },
+  "make_test": "PASS; Go race suite returned cached success; 4 Python tests passed; cmd/agent-phone has no test files",
+  "mcp": {
+    "initialize": "2025-06-18",
+    "tool_count": 14,
+    "ping": {},
+    "stderr": ""
+  },
+  "vendored_simslim_race_tests": "PASS; invoked separately from third_party/simslim",
+  "saved_mcp_reproduction": "PASS; saved script rerun reproduced 0 to 12 open Unix descriptors after 12 rejected requests"
+}

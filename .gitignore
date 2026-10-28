@@ -1,0 +1,7 @@
+/build/
+/.cache/
+/.tools/
+/.agent-phone/
+.DS_Store
+__pycache__/
+*.pyc
